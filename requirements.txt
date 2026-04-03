@@ -1,0 +1,2 @@
+numpy
+cupy-cuda12x
