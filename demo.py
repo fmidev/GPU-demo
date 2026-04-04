@@ -139,6 +139,42 @@ def process_chunks(
     return results, kernel_ms, wall_s  # type: ignore[return-value]
 
 
+def process_chunks_naive(chunks: list[np.ndarray]) -> tuple[list[np.ndarray], float]:
+    """Copy each chunk to the GPU, compute sqrt, copy result back — no streams.
+
+    This is a naive (synchronous) GPU implementation: each chunk is copied to
+    a CuPy device array, processed, and the result is copied back to the host
+    before the next chunk is started.  No CUDA streams or overlap between
+    transfers and computation.
+
+    Parameters
+    ----------
+    chunks:
+        List of host (NumPy) arrays to process.
+
+    Returns
+    -------
+    results:
+        List of host (NumPy) arrays containing sqrt(chunk) for every input
+        chunk.
+    wall_s:
+        Wall-clock elapsed seconds for the entire pipeline (transfers +
+        kernels + synchronisation).
+    """
+    results: list[np.ndarray] = []
+
+    wall_start = time.perf_counter()
+
+    for host_chunk in chunks:
+        device_chunk = cp.asarray(host_chunk)
+        device_result = cp.sqrt(device_chunk)
+        results.append(cp.asnumpy(device_result))
+
+    wall_s = time.perf_counter() - wall_start
+
+    return results, wall_s
+
+
 def process_chunks_cpu(chunks: list[np.ndarray]) -> tuple[list[np.ndarray], float]:
     """Compute sqrt on the CPU for every chunk using NumPy.
 
@@ -187,37 +223,48 @@ def main() -> None:
     chunks = make_host_chunks(TOTAL_ELEMENTS, CHUNK_SIZE)
     print(f"  Created {len(chunks)} chunks, each of shape {chunks[0].shape}\n")
 
-    # 2. GPU pipeline: stream chunks to device, compute sqrt, stream back
-    print("GPU  – streaming chunks to device, computing sqrt, streaming back …")
+    # 2. GPU pipeline (async): stream chunks to device, compute sqrt, stream back
+    print("GPU async  – streaming chunks to device, computing sqrt, streaming back …")
     gpu_results, kernel_ms, gpu_wall_s = process_chunks(chunks, n_streams=N_STREAMS)
     print(f"  Processed {len(gpu_results)} chunks\n")
 
-    # 3. CPU baseline: compute sqrt with NumPy
+    # 3. GPU naive: copy each chunk synchronously, compute sqrt, copy back
+    print("GPU naive  – copying chunks in a loop (no streams), computing sqrt …")
+    naive_results, naive_wall_s = process_chunks_naive(chunks)
+    print(f"  Processed {len(naive_results)} chunks\n")
+
+    # 4. CPU baseline: compute sqrt with NumPy
     print("CPU  – computing sqrt with NumPy …")
     cpu_results, cpu_wall_s = process_chunks_cpu(chunks)
     print(f"  Processed {len(cpu_results)} chunks\n")
 
-    # 4. Verify GPU results against CPU reference
-    print("Verifying GPU results against CPU reference …")
-    ok = verify(gpu_results, cpu_results)
-    status = "PASSED ✓" if ok else "FAILED ✗"
-    print(f"  Verification: {status}\n")
+    # 5. Verify GPU results against CPU reference
+    print("Verifying GPU async results against CPU reference …")
+    ok_async = verify(gpu_results, cpu_results)
+    print(f"  Verification: {'PASSED ✓' if ok_async else 'FAILED ✗'}\n")
 
-    # 5. Timing summary
+    print("Verifying GPU naive results against CPU reference …")
+    ok_naive = verify(naive_results, cpu_results)
+    print(f"  Verification: {'PASSED ✓' if ok_naive else 'FAILED ✗'}\n")
+
+    # 6. Timing summary
     _eps = 1e-9  # guard against division by zero for very fast GPU runs
-    speedup = cpu_wall_s / max(gpu_wall_s, _eps)
-    print("─" * 52)
-    print(f"{'Timing summary':^52}")
-    print("─" * 52)
-    print(f"  {'GPU wall time (upload + kernel + download):':<44} {gpu_wall_s * 1e3:>6.2f} ms")
-    print(f"  {'GPU kernel-only time (CUDA events, aggregated):':<44} {kernel_ms:>6.2f} ms")
-    print(f"  {'CPU wall time (NumPy sqrt, all chunks):':<44} {cpu_wall_s * 1e3:>6.2f} ms")
-    print("─" * 52)
-    print(f"  {'Speedup  GPU wall vs CPU wall:':<44} {speedup:>6.2f}×")
-    print("─" * 52)
+    speedup_async = cpu_wall_s / max(gpu_wall_s, _eps)
+    speedup_naive = cpu_wall_s / max(naive_wall_s, _eps)
+    print("─" * 56)
+    print(f"{'Timing summary':^56}")
+    print("─" * 56)
+    print(f"  {'GPU async wall time (upload + kernel + download):':<48} {gpu_wall_s * 1e3:>6.2f} ms")
+    print(f"  {'GPU async kernel-only time (CUDA events, aggregated):':<48} {kernel_ms:>6.2f} ms")
+    print(f"  {'GPU naive wall time (loop copy + kernel + copy back):':<48} {naive_wall_s * 1e3:>6.2f} ms")
+    print(f"  {'CPU wall time (NumPy sqrt, all chunks):':<48} {cpu_wall_s * 1e3:>6.2f} ms")
+    print("─" * 56)
+    print(f"  {'Speedup  GPU async wall vs CPU wall:':<48} {speedup_async:>6.2f}×")
+    print(f"  {'Speedup  GPU naive wall vs CPU wall:':<48} {speedup_naive:>6.2f}×")
+    print("─" * 56)
     print()
 
-    # 6. Show a small sample
+    # 7. Show a small sample
     sample = gpu_results[0][:8]
     print("Sample (first 8 sqrt values from chunk 0):")
     print(" ", sample)

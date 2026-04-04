@@ -10,10 +10,15 @@ CUDA device and back using [CuPy](https://cupy.dev/) CUDA streams.
 2. **Initialises** every source chunk with random values (NumPy random
    generator).
 3. **Streams** each chunk asynchronously to the GPU using a dedicated
-   `cupy.cuda.Stream`.
+   `cupy.cuda.Stream` (*async GPU*).
 4. **Computes** the element-wise square root on the device (`cupy.sqrt`).
 5. **Streams** the result back to the host.
-6. **Verifies** the results against a NumPy reference.
+6. **Naive GPU**: copies each chunk to the device in a plain for-loop (no
+   streams), computes sqrt, and copies the result back before moving to the
+   next chunk.
+7. **CPU baseline**: computes sqrt with NumPy for comparison.
+8. **Verifies** the results of both GPU implementations against the NumPy
+   reference.
 
 The number of concurrent CUDA streams is configurable; by default four streams
 are used so that transfers and kernel launches for different chunks can overlap.
@@ -50,11 +55,32 @@ Example output:
 Initialising host data with random numbers …
   Created 10 chunks, each of shape (100000,)
 
-Streaming chunks to GPU, computing sqrt, streaming results back …
+GPU async  – streaming chunks to device, computing sqrt, streaming back …
   Processed 10 chunks
 
-Verifying results against NumPy reference …
+GPU naive  – copying chunks in a loop (no streams), computing sqrt …
+  Processed 10 chunks
+
+CPU  – computing sqrt with NumPy …
+  Processed 10 chunks
+
+Verifying GPU async results against CPU reference …
   Verification: PASSED ✓
+
+Verifying GPU naive results against CPU reference …
+  Verification: PASSED ✓
+
+────────────────────────────────────────────────────────
+                     Timing summary
+────────────────────────────────────────────────────────
+  GPU async wall time (upload + kernel + download):   12.34 ms
+  GPU async kernel-only time (CUDA events, aggregated):  2.10 ms
+  GPU naive wall time (loop copy + kernel + copy back):  18.50 ms
+  CPU wall time (NumPy sqrt, all chunks):               45.67 ms
+────────────────────────────────────────────────────────
+  Speedup  GPU async wall vs CPU wall:                  3.70×
+  Speedup  GPU naive wall vs CPU wall:                  2.47×
+────────────────────────────────────────────────────────
 
 Sample (first 8 sqrt values from chunk 0):
   [0.77459663 0.9958897  0.31053504 …]
