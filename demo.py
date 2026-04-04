@@ -1,10 +1,13 @@
 """
 GPU Demo: Chunked host-to-device streaming with CuPy CUDA streams.
 
-Data is held in chunked arrays on host memory (NumPy). Each chunk is
-streamed to the GPU using a dedicated CuPy CUDA stream, the square root
-of every element is computed on the device, and the result is streamed
-back to the host.
+Data is held in chunked arrays on CUDA pinned (page-locked) host memory.
+Each chunk is streamed to the GPU using a dedicated CuPy CUDA stream, the
+square root of every element is computed on the device, and the result is
+streamed back to the host.
+
+Pinned memory allows the CUDA DMA engine to bypass the OS bounce buffer,
+improving host↔device transfer throughput.
 
 Timing statistics are printed at the end to compare GPU (full pipeline:
 host→device + kernel + device→host) against a pure-CPU NumPy baseline.
@@ -24,14 +27,38 @@ CHUNK_SIZE = 100_000          # elements per chunk
 N_STREAMS = 4                 # number of concurrent CUDA streams
 
 
-def make_host_chunks(total: int, chunk_size: int) -> list[np.ndarray]:
-    """Allocate and initialise source data as a list of host (NumPy) chunks.
+def pinned_array(array: np.ndarray) -> np.ndarray:
+    """Return a copy of *array* backed by CUDA pinned (page-locked) memory.
 
-    Each chunk is a 1-D float32 array filled with random values in [0, 1).
+    Pinned memory allows the CUDA DMA engine to transfer data between host and
+    device without an intermediate bounce buffer, which can significantly
+    improve host↔device bandwidth.
+
+    Memory lifecycle: ``np.frombuffer`` retains a reference to the underlying
+    ``PinnedMemoryPointer`` (``mem``) via Python's buffer protocol.  The pinned
+    allocation is therefore kept alive for as long as the returned array is
+    alive, and is freed automatically by CuPy's memory pool once the array is
+    garbage-collected.
+    """
+    mem = cp.cuda.alloc_pinned_memory(array.nbytes)
+    src = np.frombuffer(mem, array.dtype, array.size).reshape(array.shape)
+    src[...] = array
+    return src
+
+
+def make_host_chunks(total: int, chunk_size: int) -> list[np.ndarray]:
+    """Allocate and initialise source data as a list of pinned host chunks.
+
+    Each chunk is a 1-D float32 array filled with random values in [0, 1)
+    and is backed by CUDA pinned (page-locked) memory so that host↔device
+    DMA transfers bypass any intermediate bounce buffer.
     """
     rng = np.random.default_rng(seed=42)
     source = rng.random(total, dtype=np.float32)
-    return [source[i : i + chunk_size] for i in range(0, total, chunk_size)]
+    return [
+        pinned_array(source[i : i + chunk_size])
+        for i in range(0, total, chunk_size)
+    ]
 
 
 def process_chunks(
