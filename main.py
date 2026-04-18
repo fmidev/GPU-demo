@@ -6,7 +6,8 @@ import cupy as cp
 import cupyx
 import numpy as np
 
-from blosc_async import read_blosc_array, write_blosc_array, write_zarr_array_metadata
+from blosc_async import read_blosc_array, write_blosc_array
+from metadata import write_zarr_array_metadata
 
 logger = logging.getLogger(__name__)
 
