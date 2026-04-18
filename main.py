@@ -8,7 +8,7 @@ import numpy as np
 
 from blosc_async import read_blosc_array, write_blosc_array
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("main")
 
 
 # Create memory pools for faster host/device transfers.

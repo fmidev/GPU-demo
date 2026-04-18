@@ -39,13 +39,9 @@ async def write_blosc_array(
     await asyncio.to_thread(_write)
     elapsed = perf_counter() - started
     logger.info(
-        "task=%s op=write_blosc path=%s chunk_id=%s shape=%s dtype=%s nbytes=%d elapsed_s=%.6f",
+        "task=%s op=write_blosc path=%s elapsed_s=%.6f",
         task_tag,
         path,
-        chunk_id,
-        array.shape,
-        array.dtype,
-        array.nbytes,
         elapsed,
     )
 
@@ -96,12 +92,8 @@ async def read_blosc_array(
     await asyncio.to_thread(_read)
     elapsed = perf_counter() - started
     logger.info(
-        "task=%s op=read_blosc path=%s chunk_id=%s shape=%s dtype=%s nbytes=%d elapsed_s=%.6f",
+        "task=%s op=read_blosc path=%s elapsed_s=%.6f",
         task_tag,
         file_path,
-        chunk_id,
-        shape,
-        dtype,
-        expected_nbytes,
         elapsed,
     )
