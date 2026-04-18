@@ -42,6 +42,7 @@ async def write_blosc_array(
         )
 
         compressed = codec.encode(contiguous)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(compressed)
 
     await asyncio.to_thread(_write)
