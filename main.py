@@ -6,7 +6,6 @@ import asyncio
 
 from time import perf_counter
 from blosc_async import *
-from mempool import *
 
 
 
