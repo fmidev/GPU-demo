@@ -148,7 +148,7 @@ async def process_one(i: int, j: int, k: int, compressor: dict, sem: asyncio.Sem
         )
         )
 
-async def main(compressor: dict) -> int:
+async def main(compressor: dict) -> None:
     sem = asyncio.Semaphore(4)
 
     tasks = [
