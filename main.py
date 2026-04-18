@@ -6,7 +6,7 @@ import cupy as cp
 import cupyx
 import numpy as np
 
-from blosc_async import read_blosc_array, write_blosc_array
+from blosc_async import read_blosc_array, write_blosc_array, write_zarr_array_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,10 @@ compressor = {
     "shuffle": 1,
     "blocksize": 0,
 }
+
+array_shape = (72, 65, 1200, 1000)
+chunk_shape = (24, 65, 200, 200)
+array_attrs = {"cf_conventions": "CF-1.8"}
 
 
 async def load_ab():
@@ -216,6 +220,26 @@ async def main(compressor: dict) -> None:
     ]
 
     await asyncio.gather(*tasks)
+    await asyncio.gather(
+        asyncio.to_thread(
+            write_zarr_array_metadata,
+            "ds.zarr/rh",
+            shape=array_shape,
+            chunks=chunk_shape,
+            dtype=np.float32,
+            compressor_config=compressor,
+            attrs=array_attrs,
+        ),
+        asyncio.to_thread(
+            write_zarr_array_metadata,
+            "ds.zarr/rho",
+            shape=array_shape,
+            chunks=chunk_shape,
+            dtype=np.float32,
+            compressor_config=compressor,
+            attrs=array_attrs,
+        ),
+    )
 
 
 if __name__ == "__main__":
