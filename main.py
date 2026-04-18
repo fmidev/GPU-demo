@@ -160,15 +160,16 @@ async def main(compressor: dict) -> None:
 
     await asyncio.gather(*tasks)
 
-# start timing
-t = perf_counter()
+if __name__ == "__main__":
+    # start timing
+    t = perf_counter()
 
-# Load a,b first
-a, b = asyncio.run(load_ab())
-a = cp.asarray(a)
-b = cp.asarray(b)
+    # Load a,b first
+    a, b = asyncio.run(load_ab())
+    a = cp.asarray(a)
+    b = cp.asarray(b)
 
-# run the job
-asyncio.run(main(compressor))
-print(f"first run took {perf_counter() -t}s")
+    # run the job
+    asyncio.run(main(compressor))
+    print(f"first run took {perf_counter() -t}s")
 
