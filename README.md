@@ -40,10 +40,13 @@ From the repository root:
 python main.py
 ```
 
-Expected output includes total runtime, for example:
+Expected output includes INFO logs with timings for Blosc I/O and GPU tasks,
+including file paths and chunk ids, plus total runtime, for example:
 
 ```text
-first run took 12.34s
+2026-01-01 12:00:00,000 INFO blosc_async task=chunk:0.0.0.0:read_t op=read_blosc path=... chunk_id=0.0.0.0 ... elapsed_s=...
+2026-01-01 12:00:00,001 INFO __main__ task=chunk:0.0.0.0 kernel=rh elapsed_ms=...
+2026-01-01 12:00:12,340 INFO __main__ task=run_total elapsed_s=12.340000
 ```
 
 ## Data paths

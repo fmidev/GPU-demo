@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from time import perf_counter
 
 import cupy as cp
@@ -6,6 +7,8 @@ import cupyx
 import numpy as np
 
 from blosc_async import read_blosc_array, write_blosc_array
+
+logger = logging.getLogger(__name__)
 
 
 # Create memory pools for faster host/device transfers.
@@ -31,8 +34,22 @@ async def load_ab():
     b_buf = np.empty((65,), dtype=np.float64)
 
     await asyncio.gather(
-        read_blosc_array("../data/dataset.zarr/a/0", a_buf, dtype=np.float64, shape=(65,)),
-        read_blosc_array("../data/dataset.zarr/b/0", b_buf, dtype=np.float64, shape=(65,)),
+        read_blosc_array(
+            "../data/dataset.zarr/a/0",
+            a_buf,
+            dtype=np.float64,
+            shape=(65,),
+            chunk_id="0",
+            task_tag="load_coefficients",
+        ),
+        read_blosc_array(
+            "../data/dataset.zarr/b/0",
+            b_buf,
+            dtype=np.float64,
+            shape=(65,),
+            chunk_id="0",
+            task_tag="load_coefficients",
+        ),
     )
 
     a = a_buf.astype(np.float32, copy=False)
@@ -40,10 +57,12 @@ async def load_ab():
     return a, b
 
 
-async def compute_rh_gpu_async(t_h, q_h, ps_h, stream, out_h):
+async def compute_rh_gpu_async(t_h, q_h, ps_h, stream, out_h, *, task_tag: str):
     """Launch RH work and await stream completion."""
-    event = _launch_rh_gpu(t_h, q_h, ps_h, out_h, stream)
-    await asyncio.to_thread(event.synchronize)
+    start_event, done_event = _launch_rh_gpu(t_h, q_h, ps_h, out_h, stream)
+    await asyncio.to_thread(done_event.synchronize)
+    elapsed_ms = cp.cuda.get_elapsed_time(start_event, done_event)
+    logger.info("task=%s kernel=rh elapsed_ms=%.3f", task_tag, elapsed_ms)
     return out_h
 
 
@@ -53,9 +72,11 @@ def _launch_rh_gpu(
     ps_h: np.ndarray,
     out_h: np.ndarray,
     stream: cp.cuda.Stream,
-) -> cp.cuda.Event:
+) -> tuple[cp.cuda.Event, cp.cuda.Event]:
     """Compute relative humidity on GPU and stage async host copy."""
     with stream:
+        start_event = cp.cuda.Event()
+        start_event.record(stream)
         t = cp.asarray(t_h, blocking=False)
         q = cp.asarray(q_h, blocking=False)
         ps = cp.asarray(ps_h, blocking=False)
@@ -75,15 +96,17 @@ def _launch_rh_gpu(
         RH = 100 * (p * q) / (0.622 * E) * (p - E) / (p - (q * p) / 0.622)
 
         RH.get(out=out_h, blocking=False)
-        event = cp.cuda.Event()
-        event.record(stream)
-        return event
+        done_event = cp.cuda.Event()
+        done_event.record(stream)
+        return start_event, done_event
 
 
-async def compute_rho_gpu_async(t_h, ps_h, stream, out_rho):
+async def compute_rho_gpu_async(t_h, ps_h, stream, out_rho, *, task_tag: str):
     """Launch density work and await stream completion."""
-    event = _launch_rho_gpu(t_h, ps_h, out_rho, stream)
-    await asyncio.to_thread(event.synchronize)
+    start_event, done_event = _launch_rho_gpu(t_h, ps_h, out_rho, stream)
+    await asyncio.to_thread(done_event.synchronize)
+    elapsed_ms = cp.cuda.get_elapsed_time(start_event, done_event)
+    logger.info("task=%s kernel=rho elapsed_ms=%.3f", task_tag, elapsed_ms)
     return out_rho
 
 
@@ -92,9 +115,11 @@ def _launch_rho_gpu(
     ps_h: np.ndarray,
     out_rho: np.ndarray,
     stream: cp.cuda.Stream,
-) -> cp.cuda.Event:
+) -> tuple[cp.cuda.Event, cp.cuda.Event]:
     """Compute density on GPU and stage async host copy."""
     with stream:
+        start_event = cp.cuda.Event()
+        start_event.record(stream)
         t = cp.asarray(t_h, blocking=False)
         ps = cp.asarray(ps_h, blocking=False)
 
@@ -105,9 +130,9 @@ def _launch_rho_gpu(
         RHO = P / (287 * t)
         RHO.get(out=out_rho, blocking=False)
 
-        event = cp.cuda.Event()
-        event.record(stream)
-        return event
+        done_event = cp.cuda.Event()
+        done_event.record(stream)
+        return start_event, done_event
 
 
 async def process_one(
@@ -118,6 +143,8 @@ async def process_one(
     sem: asyncio.Semaphore,
 ) -> int:
     """Read one chunk triplet, compute RH/RHO, then write outputs."""
+    chunk_id = f"{i}.0.{j}.{k}"
+    task_tag = f"chunk:{chunk_id}"
     async with sem:
         t_h = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
         q_h = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
@@ -129,40 +156,50 @@ async def process_one(
 
         await asyncio.gather(
             read_blosc_array(
-                f"../data/dataset.zarr/t/{i}.0.{j}.{k}",
+                f"../data/dataset.zarr/t/{chunk_id}",
                 t_h,
                 dtype=np.float32,
                 shape=(24, 65, 200, 200),
+                chunk_id=chunk_id,
+                task_tag=f"{task_tag}:read_t",
             ),
             read_blosc_array(
-                f"../data/dataset.zarr/q/{i}.0.{j}.{k}",
+                f"../data/dataset.zarr/q/{chunk_id}",
                 q_h,
                 dtype=np.float32,
                 shape=(24, 65, 200, 200),
+                chunk_id=chunk_id,
+                task_tag=f"{task_tag}:read_q",
             ),
             read_blosc_array(
-                f"../data/dataset.zarr/ps/{i}.0.{j}.{k}",
+                f"../data/dataset.zarr/ps/{chunk_id}",
                 ps_h,
                 dtype=np.float32,
                 shape=(24, 1, 200, 200),
+                chunk_id=chunk_id,
+                task_tag=f"{task_tag}:read_ps",
             ),
         )
 
         out_rh, out_rho = await asyncio.gather(
-            compute_rh_gpu_async(t_h, q_h, ps_h, stream1, out_rh),
-            compute_rho_gpu_async(t_h, ps_h, stream2, out_rho),
+            compute_rh_gpu_async(t_h, q_h, ps_h, stream1, out_rh, task_tag=task_tag),
+            compute_rho_gpu_async(t_h, ps_h, stream2, out_rho, task_tag=task_tag),
         )
 
         await asyncio.gather(
             write_blosc_array(
-                f"ds.zarr/rh/{i}.0.{j}.{k}",
+                f"ds.zarr/rh/{chunk_id}",
                 out_rh,
                 compressor,
+                chunk_id=chunk_id,
+                task_tag=f"{task_tag}:write_rh",
             ),
             write_blosc_array(
-                f"ds.zarr/rho/{i}.0.{j}.{k}",
+                f"ds.zarr/rho/{chunk_id}",
                 out_rho,
                 compressor,
+                chunk_id=chunk_id,
+                task_tag=f"{task_tag}:write_rho",
             ),
         )
 
@@ -182,6 +219,11 @@ async def main(compressor: dict) -> None:
 
 
 if __name__ == "__main__":
+    logger = logging.getLogger("main")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     # Load coefficients once, then process all chunk tasks.
     t = perf_counter()
     a, b = asyncio.run(load_ab())
@@ -189,4 +231,4 @@ if __name__ == "__main__":
     b = cp.asarray(b)
 
     asyncio.run(main(compressor))
-    print(f"first run took {perf_counter() - t}s")
+    logger.info("task=run_total elapsed_s=%.6f", perf_counter() - t)
