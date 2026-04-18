@@ -12,9 +12,9 @@ import asyncio
 
 def time_it(func):
     @wraps(func)
-    def wrapper(*args, **kwargs):
+    async def wrapper(*args, **kwargs):
         start = perf_counter()
-        result = func(*args, **kwargs)
+        result = await func(*args, **kwargs)
         end = perf_counter()
         print(f"{func.__name__} started {start}, ended {end}, took {end - start:.6f} seconds")
         return result
