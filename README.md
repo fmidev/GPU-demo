@@ -1,22 +1,21 @@
 # GPU-demo
 
-A demo project that shows how to stream data chunk-wise from host memory to a
-CUDA device and back using [CuPy](https://cupy.dev/) CUDA streams.
+A demo project that reads Blosc-compressed chunks, performs GPU computation
+with [CuPy](https://cupy.dev/), and writes compressed results asynchronously.
 
-## What the demo does
+## What the code does
 
-1. **Allocates** a large 1-D float32 array on the host (NumPy) and splits it
-   into equal-sized chunks.
-2. **Initialises** every source chunk with random values (NumPy random
-   generator).
-3. **Streams** each chunk asynchronously to the GPU using a dedicated
-   `cupy.cuda.Stream`.
-4. **Computes** the element-wise square root on the device (`cupy.sqrt`).
-5. **Streams** the result back to the host.
-6. **Verifies** the results against a NumPy reference.
+`main.py` orchestrates an async pipeline:
 
-The number of concurrent CUDA streams is configurable; by default four streams
-are used so that transfers and kernel launches for different chunks can overlap.
+1. Loads hybrid-pressure coefficients (`a`, `b`) from
+   `../data/dataset.zarr/a/0` and `../data/dataset.zarr/b/0`.
+2. Reads temperature (`t`), humidity (`q`), and surface pressure (`ps`) chunks
+   using `read_blosc_array` from `blosc_async.py`.
+3. Launches two GPU computations on separate CUDA streams:
+   - relative humidity (`rh`)
+   - air density (`rho`)
+4. Copies results back to pinned host memory and writes compressed output chunks
+   to `ds.zarr/rh/...` and `ds.zarr/rho/...`.
 
 ## Requirements
 
@@ -24,6 +23,8 @@ are used so that transfers and kernel launches for different chunks can overlap.
 * NVIDIA GPU with CUDA 12.x drivers
 * `numpy`
 * `cupy-cuda12x`
+* `numcodecs`
+* `blosc`
 
 Install dependencies:
 
@@ -33,39 +34,19 @@ pip install -r requirements.txt
 
 ## Usage
 
+From the repository root:
+
 ```bash
-python demo.py
+python main.py
 ```
 
-Example output:
+Expected output includes total runtime, for example:
 
-```
-=== GPU Demo: chunked sqrt via CUDA streams ===
-
-  Total elements : 1,000,000
-  Chunk size     : 100,000
-  Number of chunks: 10
-  CUDA streams   : 4
-
-Initialising host data with random numbers …
-  Created 10 chunks, each of shape (100000,)
-
-Streaming chunks to GPU, computing sqrt, streaming results back …
-  Processed 10 chunks
-
-Verifying results against NumPy reference …
-  Verification: PASSED ✓
-
-Sample (first 8 sqrt values from chunk 0):
-  [0.77459663 0.9958897  0.31053504 …]
+```text
+first run took 12.34s
 ```
 
-## Configuration
+## Data paths
 
-Edit the constants at the top of `demo.py` to change the workload:
-
-| Constant          | Default     | Description                        |
-|-------------------|-------------|------------------------------------|
-| `TOTAL_ELEMENTS`  | 1 000 000   | Total number of float32 values     |
-| `CHUNK_SIZE`      | 100 000     | Elements per chunk                 |
-| `N_STREAMS`       | 4           | Number of concurrent CUDA streams  |
+The current example expects input data under `../data/dataset.zarr/` and writes
+results to `ds.zarr/` in the working directory.
