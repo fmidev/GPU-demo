@@ -29,7 +29,7 @@ compressor = {
 }
 
 CF_VERSION = "CF-1.8"
-ARRAY_SHAPE = (72, 65, 1200, 1000)
+ARRAY_SHAPE = (67, 65, 1069, 949)
 CHUNK_SHAPE = (24, 65, 200, 200)
 ARRAY_ATTRS = {"Conventions": CF_VERSION, "cf_conventions": CF_VERSION}
 
