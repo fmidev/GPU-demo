@@ -8,7 +8,7 @@ import numpy as np
 
 from blosc_async import read_blosc_array, write_blosc_array
 
-logger = logging.getLogger("main")
+logger = logging.getLogger(__name__)
 
 
 # Create memory pools for faster host/device transfers.
@@ -219,6 +219,7 @@ async def main(compressor: dict) -> None:
 
 
 if __name__ == "__main__":
+    logger = logging.getLogger("main")
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
