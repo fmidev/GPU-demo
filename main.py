@@ -116,7 +116,7 @@ async def process_one(
     k: int,
     compressor: dict,
     sem: asyncio.Semaphore,
-) -> None:
+) -> int:
     """Read one chunk triplet, compute RH/RHO, then write outputs."""
     async with sem:
         t_h = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
