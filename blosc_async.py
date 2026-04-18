@@ -9,6 +9,7 @@ from typing import Union
 
 import blosc
 import numpy as np
+from numpy.typing import DTypeLike
 from numcodecs import Blosc
 
 logger = logging.getLogger(__name__)
@@ -19,7 +20,7 @@ def write_zarr_array_metadata(
     *,
     shape: tuple[int, ...],
     chunks: tuple[int, ...],
-    dtype: np.dtype,
+    dtype: DTypeLike,
     compressor_config: dict,
     attrs: dict,
 ) -> None:
@@ -30,7 +31,7 @@ def write_zarr_array_metadata(
     zarray = {
         "chunks": list(chunks),
         "compressor": compressor_config,
-        "dtype": np.dtype(dtype).str,
+        "dtype": np.dtype(dtype).newbyteorder("<").str,
         "fill_value": None,
         "filters": None,
         "order": "C",
@@ -38,8 +39,12 @@ def write_zarr_array_metadata(
         "zarr_format": 2,
     }
 
-    (array_dir / ".zarray").write_text(json.dumps(zarray), encoding="utf-8")
-    (array_dir / ".zattrs").write_text(json.dumps(attrs), encoding="utf-8")
+    (array_dir / ".zarray").write_text(
+        json.dumps(zarray, indent=2) + "\n", encoding="utf-8"
+    )
+    (array_dir / ".zattrs").write_text(
+        json.dumps(attrs, indent=2) + "\n", encoding="utf-8"
+    )
 
 async def write_blosc_array(
     path: Union[str, Path],

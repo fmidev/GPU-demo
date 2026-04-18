@@ -27,9 +27,10 @@ compressor = {
     "blocksize": 0,
 }
 
-array_shape = (72, 65, 1200, 1000)
-chunk_shape = (24, 65, 200, 200)
-array_attrs = {"cf_conventions": "CF-1.8"}
+CF_VERSION = "CF-1.8"
+ARRAY_SHAPE = (72, 65, 1200, 1000)
+CHUNK_SHAPE = (24, 65, 200, 200)
+ARRAY_ATTRS = {"Conventions": CF_VERSION, "cf_conventions": CF_VERSION}
 
 
 async def load_ab():
@@ -224,20 +225,20 @@ async def main(compressor: dict) -> None:
         asyncio.to_thread(
             write_zarr_array_metadata,
             "ds.zarr/rh",
-            shape=array_shape,
-            chunks=chunk_shape,
+            shape=ARRAY_SHAPE,
+            chunks=CHUNK_SHAPE,
             dtype=np.float32,
             compressor_config=compressor,
-            attrs=array_attrs,
+            attrs=ARRAY_ATTRS,
         ),
         asyncio.to_thread(
             write_zarr_array_metadata,
             "ds.zarr/rho",
-            shape=array_shape,
-            chunks=chunk_shape,
+            shape=ARRAY_SHAPE,
+            chunks=CHUNK_SHAPE,
             dtype=np.float32,
             compressor_config=compressor,
-            attrs=array_attrs,
+            attrs=ARRAY_ATTRS,
         ),
     )
 
