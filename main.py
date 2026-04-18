@@ -1,7 +1,6 @@
 import numpy as np
 import cupy as cp
 import cupyx
-import threading
 import asyncio
 
 from time import perf_counter
@@ -171,4 +170,3 @@ if __name__ == "__main__":
     # run the job
     asyncio.run(main(compressor))
     print(f"first run took {perf_counter() -t}s")
-
