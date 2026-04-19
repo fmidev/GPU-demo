@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Union
 
@@ -12,6 +13,14 @@ import threading
 
 from time import perf_counter
 from functools import wraps
+
+ARRAY_SHAPE = (67, 65, 1069, 949)
+CHUNK_SHAPE = (24, 65, 200, 200)
+ARRAY_ATTRS = {
+    "grid_mapping": "lambert",
+    "coordinates": "a b latitude longitude",
+    "_ARRAY_DIMENSIONS": ["time", "hybrid", "y", "x"],
+}
 
 def time_it(func):
     @wraps(func)
@@ -50,6 +59,7 @@ def write_blosc_array(
         }
     """
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     array = np.ascontiguousarray(array)
 
     codec = Blosc(
@@ -61,6 +71,32 @@ def write_blosc_array(
 
     compressed = codec.encode(array)
     path.write_bytes(compressed)
+
+def write_zarr_metadata(
+    array_dir: Union[str, Path],
+    *,
+    shape: tuple[int, ...],
+    chunks: tuple[int, ...],
+    compressor_config: dict,
+) -> None:
+    array_dir = Path(array_dir)
+    array_dir.mkdir(parents=True, exist_ok=True)
+
+    zarray = {
+        "chunks": list(chunks),
+        "compressor": compressor_config,
+        "dtype": np.dtype(np.float32).newbyteorder("<").str,
+        "fill_value": None,
+        "filters": None,
+        "order": "C",
+        "shape": list(shape),
+        "zarr_format": 2,
+    }
+
+    (array_dir / ".zarray").write_text(json.dumps(zarray, indent=2) + "\n", encoding="utf-8")
+    (array_dir / ".zattrs").write_text(
+        json.dumps(ARRAY_ATTRS, indent=2) + "\n", encoding="utf-8"
+    )
 
 @time_it
 def read_blosc_array(
@@ -111,7 +147,7 @@ def read_blosc_array(
     return np.frombuffer(decompressed, dtype=dtype).reshape(shape, order=order)
 
 @time_it
-def compute(i,j,k):
+def compute(i,j,k,slot):
     t = cp.asarray(read_blosc_array(f"../data/dataset.zarr/t/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,65,200,200)))
     q = cp.asarray(read_blosc_array(f"../data/dataset.zarr/q/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,65,200,200)))
     ps = cp.asarray(read_blosc_array(f"../data/dataset.zarr/ps/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,1,200,200)))
@@ -127,7 +163,7 @@ def compute(i,j,k):
         )
 
     RH = 100 * (p * q) / (0.622 * E) * (p - E) / (p - (q*p) / 0.622)
-    RH.get(out=h_out_buf[k%2],blocking=False)
+    RH.get(out=h_out_buf[slot],blocking=False)
 
 
 a=cp.asarray(read_blosc_array(f"../data/dataset.zarr/a/0",dtype=np.float64,shape=(65)).astype(np.float32))
@@ -143,30 +179,49 @@ compressor = {
 
 streams = [cp.cuda.Stream(non_blocking=True) for _ in range(2)]
 h_out_buf = [cupyx.empty_pinned((24,65,200,200), dtype=np.float32) for _ in range(2)]
-threads = [threading.Thread() for _ in range(2)]
-prev = 0
+threads: list[threading.Thread | None] = [None, None]
+slot_chunk: list[tuple[int, int, int] | None] = [None, None]
 count = 0
 
 for i in range(3):
     for j in range(6):
         for k in range(5):
-            with streams[k%2]:
-                compute(i,j,k)
+            slot = count % 2
+            if threads[slot] is not None:
+                threads[slot].join()
+                threads[slot] = None
 
-            streams[prev].synchronize()
-            try:
-                threads[prev].join()
-            except:
-                pass
+            with streams[slot]:
+                compute(i,j,k,slot)
+            slot_chunk[slot] = (i, j, k)
+
             if count > 0:
-                pi, pj, pk = prev_ijk
-                threads[prev] = threading.Thread(target=write_blosc_array, args=(f"ds.zarr/rh/{pi}.0.{pj}.{pk}",h_out_buf[prev],compressor,))
-                threads[prev].start()
+                prev_slot = 1 - slot
+                streams[prev_slot].synchronize()
+                pi, pj, pk = slot_chunk[prev_slot]
+                threads[prev_slot] = threading.Thread(
+                    target=write_blosc_array,
+                    args=(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", h_out_buf[prev_slot], compressor),
+                )
+                threads[prev_slot].start()
 
-            prev = k%2
-            prev_ijk = i,j,k
             count += 1
 
-streams[prev].synchronize()
-write_blosc_array(f"ds.zarr/rh/{i}.0.{j}.{k}",h_out_buf[prev],compressor)
+if count > 0:
+    final_slot = (count - 1) % 2
+    streams[final_slot].synchronize()
+    if threads[final_slot] is not None:
+        threads[final_slot].join()
+    fi, fj, fk = slot_chunk[final_slot]
+    write_blosc_array(f"out.zarr/tier_b/{fi}.0.{fj}.{fk}", h_out_buf[final_slot], compressor)
 
+for thread in threads:
+    if thread is not None:
+        thread.join()
+
+write_zarr_metadata(
+    "out.zarr/tier_b",
+    shape=ARRAY_SHAPE,
+    chunks=CHUNK_SHAPE,
+    compressor_config=compressor,
+)
