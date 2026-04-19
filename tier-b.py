@@ -16,6 +16,7 @@ from functools import wraps
 
 ARRAY_SHAPE = (67, 65, 1069, 949)
 CHUNK_SHAPE = (24, 65, 200, 200)
+FIXED_LEVEL_INDEX = 0
 ARRAY_ATTRS = {
     "grid_mapping": "lambert",
     "coordinates": "a b latitude longitude",
@@ -147,7 +148,8 @@ def read_blosc_array(
     return np.frombuffer(decompressed, dtype=dtype).reshape(shape, order=order)
 
 @time_it
-def compute(i,j,k,slot):
+def compute(i, j, k, slot):
+    """Compute RH for one chunk and stage async host copy into output slot."""
     t = cp.asarray(read_blosc_array(f"../data/dataset.zarr/t/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,65,200,200)))
     q = cp.asarray(read_blosc_array(f"../data/dataset.zarr/q/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,65,200,200)))
     ps = cp.asarray(read_blosc_array(f"../data/dataset.zarr/ps/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,1,200,200)))
@@ -163,7 +165,7 @@ def compute(i,j,k,slot):
         )
 
     RH = 100 * (p * q) / (0.622 * E) * (p - E) / (p - (q*p) / 0.622)
-    RH.get(out=h_out_buf[slot],blocking=False)
+    RH.get(out=h_out_buf[slot], blocking=False)
 
 
 a=cp.asarray(read_blosc_array(f"../data/dataset.zarr/a/0",dtype=np.float64,shape=(65)).astype(np.float32))
@@ -180,7 +182,7 @@ compressor = {
 streams = [cp.cuda.Stream(non_blocking=True) for _ in range(2)]
 h_out_buf = [cupyx.empty_pinned((24,65,200,200), dtype=np.float32) for _ in range(2)]
 threads: list[threading.Thread | None] = [None, None]
-slot_chunk: list[tuple[int, int, int] | None] = [None, None]
+slot_chunk_indices: list[tuple[int, int, int] | None] = [None, None]
 count = 0
 
 for i in range(3):
@@ -192,16 +194,26 @@ for i in range(3):
                 threads[slot] = None
 
             with streams[slot]:
-                compute(i,j,k,slot)
-            slot_chunk[slot] = (i, j, k)
+                compute(i, j, k, slot)
+            slot_chunk_indices[slot] = (i, j, k)
 
             if count > 0:
-                prev_slot = 1 - slot
+                prev_slot = (slot + 1) % 2
                 streams[prev_slot].synchronize()
-                pi, pj, pk = slot_chunk[prev_slot]
+                prev_chunk = slot_chunk_indices[prev_slot]
+                if prev_chunk is None:
+                    raise RuntimeError(
+                        f"Internal error: previous slot chunk not initialized "
+                        f"(count={count}, slot={slot}, prev_slot={prev_slot})"
+                    )
+                pi, pj, pk = prev_chunk
                 threads[prev_slot] = threading.Thread(
                     target=write_blosc_array,
-                    args=(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", h_out_buf[prev_slot], compressor),
+                    args=(
+                        f"out.zarr/tier_b/{pi}.{FIXED_LEVEL_INDEX}.{pj}.{pk}",
+                        h_out_buf[prev_slot],
+                        compressor,
+                    ),
                 )
                 threads[prev_slot].start()
 
@@ -212,8 +224,18 @@ if count > 0:
     streams[final_slot].synchronize()
     if threads[final_slot] is not None:
         threads[final_slot].join()
-    fi, fj, fk = slot_chunk[final_slot]
-    write_blosc_array(f"out.zarr/tier_b/{fi}.0.{fj}.{fk}", h_out_buf[final_slot], compressor)
+    final_chunk = slot_chunk_indices[final_slot]
+    if final_chunk is None:
+        raise RuntimeError(
+            f"Internal error: final slot chunk not initialized "
+            f"(count={count}, final_slot={final_slot})"
+        )
+    fi, fj, fk = final_chunk
+    write_blosc_array(
+        f"out.zarr/tier_b/{fi}.{FIXED_LEVEL_INDEX}.{fj}.{fk}",
+        h_out_buf[final_slot],
+        compressor,
+    )
 
 for thread in threads:
     if thread is not None:
