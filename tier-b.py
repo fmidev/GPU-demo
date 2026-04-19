@@ -173,32 +173,31 @@ prev_ijk: tuple[int, int, int] | None = None
 for i in range(3):
     for j in range(6):
         for k in range(5):
-            cur = count % 2
-            io_thread = threads[prev]
+            ping = count % 2
+            with streams[ping]:
+                compute(i,j,k,buffers[ping])
+
+            streams[pong].synchronize()
+            io_thread = threads[pong]
             if io_thread is not None:
                 io_thread.join()
-
-            with streams[cur]:
-                compute(i,j,k,buffers[cur])
-
-            streams[prev].synchronize()
-
+                
             if count > 0 and prev_ijk is not None:
                 pi, pj, pk = prev_ijk
-                threads[prev] = threading.Thread(
+                threads[pong] = threading.Thread(
                     target=write_blosc_array,
-                    args=(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[prev], compressor),
+                    args=(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[pong], compressor),
                 )
-                threads[prev].start()
+                threads[pong].start()
 
             prev_ijk = (i, j, k)
-            prev = cur
+            pong = ping
             count += 1
 
-streams[prev].synchronize()
+streams[pong].synchronize()
 write_blosc_array(f"ds.zarr/tier_b/{i}.0.{j}.{k}",buffers[prev],compressor)
 
-threads[cur].join()
+threads[ping].join()
 
 write_zarr_metadata(
     "out.zarr/tier_b",
