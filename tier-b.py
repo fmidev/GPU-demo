@@ -175,13 +175,14 @@ for i in range(3):
     for j in range(6):
         for k in range(5):
             ping = count % 2
+            io_thread = threads[ping]
+            if io_thread is not None:
+                io_thread.join()
+                
             with streams[ping]:
                 compute(i,j,k,buffers[ping])
 
             streams[pong].synchronize()
-            io_thread = threads[pong]
-            if io_thread is not None:
-                io_thread.join()
                 
             if count > 0 and prev_ijk is not None:
                 pi, pj, pk = prev_ijk
