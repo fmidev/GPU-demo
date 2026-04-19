@@ -64,6 +64,7 @@ tier_d = xr.DataArray(
     attrs=tier_d_attrs,
 )
 
+# Assumes base output dataset already exists; append only `tier_d`.
 tier_d.to_dataset().to_zarr(
     "out.zarr",
     mode="a",
