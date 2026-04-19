@@ -132,9 +132,9 @@ def read_blosc_array(
     return np.frombuffer(decompressed, dtype=dtype).reshape(shape, order=order)
 
 def compute(i,j,k,buf):
-    t = cp.asarray(read_blosc_array(f"../data/dataset.zarr/t/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,65,200,200)))
-    q = cp.asarray(read_blosc_array(f"../data/dataset.zarr/q/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,65,200,200)))
-    ps = cp.asarray(read_blosc_array(f"../data/dataset.zarr/ps/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,1,200,200)))
+    t = cp.asarray(read_blosc_array(f"../data/dataset.zarr/t/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,65,200,200)), blocking=False)
+    q = cp.asarray(read_blosc_array(f"../data/dataset.zarr/q/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,65,200,200)), blocking=False)
+    ps = cp.asarray(read_blosc_array(f"../data/dataset.zarr/ps/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,1,200,200)), blocking=False)
     ps = cp.squeeze(ps, axis=1)
 
     p = (a[None, :, None, None] + b[None, :, None, None] * ps[:, None, :, :]) / 100
@@ -147,7 +147,7 @@ def compute(i,j,k,buf):
         )
 
     RH = 100 * (p * q) / (0.622 * E) * (p - E) / (p - (q*p) / 0.622)
-    RH.get(out=buf,blocking=True)
+    RH.get(out=buf,blocking=False)
 
 def pingpong() -> Iterator[np.ndarray]:
     ping = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
@@ -168,24 +168,49 @@ compressor = {
             }
 
 buffers = pingpong()
-io_thread: threading.Thread | None = None
+h_out_buf = [next(buffers), next(buffers)]
+streams = [cp.cuda.Stream(non_blocking=True), cp.cuda.Stream(non_blocking=True)]
+threads: list[threading.Thread | None] = [None, None]
+count = 0
+prev = 0
+prev_ijk: tuple[int, int, int] | None = None
 
 for i in range(3):
     for j in range(6):
         for k in range(5):
-            buffer = next(buffers)
-            compute(i,j,k,buffer)
-
+            cur = count % 2
+            io_thread = threads[cur]
             if io_thread is not None:
                 io_thread.join()
 
-            io_thread = threading.Thread(target=write_blosc_array, args=(f"out.zarr/tier_c/{i}.0.{j}.{k}",buffer,compressor,))
-            io_thread.start()
-if io_thread is not None:
-    io_thread.join()
+            with streams[cur]:
+                compute(i,j,k,h_out_buf[cur])
+
+            streams[prev].synchronize()
+
+            if count > 0 and prev_ijk is not None:
+                pi, pj, pk = prev_ijk
+                threads[prev] = threading.Thread(
+                    target=write_blosc_array,
+                    args=(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", h_out_buf[prev], compressor),
+                )
+                threads[prev].start()
+
+            prev_ijk = (i, j, k)
+            prev = cur
+            count += 1
+
+if count > 0 and prev_ijk is not None:
+    streams[prev].synchronize()
+    pi, pj, pk = prev_ijk
+    write_blosc_array(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", h_out_buf[prev], compressor)
+
+for io_thread in threads:
+    if io_thread is not None:
+        io_thread.join()
 
 write_zarr_metadata(
-    "out.zarr/tier_c",
+    "out.zarr/tier_b",
     shape=ARRAY_SHAPE,
     chunks=CHUNK_SHAPE,
     compressor_config=compressor,
