@@ -13,6 +13,11 @@ import threading
 
 ARRAY_SHAPE = (67, 65, 1069, 949)
 CHUNK_SHAPE = (24, 65, 200, 200)
+ARRAY_ATTRS = {
+    "grid_mapping": "lambert",
+    "coordinates": "a b latitude longitude",
+    "_ARRAY_DIMENSIONS": ["hybrid", "time", "y", "x"],
+}
 
 def write_blosc_array(
     path: Union[str, Path],
@@ -75,7 +80,9 @@ def write_zarr_metadata(
     }
 
     (array_dir / ".zarray").write_text(json.dumps(zarray, indent=2) + "\n", encoding="utf-8")
-    (array_dir / ".zattrs").write_text("{}\n", encoding="utf-8")
+    (array_dir / ".zattrs").write_text(
+        json.dumps(ARRAY_ATTRS, indent=2) + "\n", encoding="utf-8"
+    )
 
 def read_blosc_array(
     file_path: Union[str, Path],
