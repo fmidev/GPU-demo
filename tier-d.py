@@ -67,6 +67,7 @@ tier_d = xr.DataArray(
 # Assumes base output dataset already exists; append only `tier_d`.
 tier_d.to_dataset().to_zarr(
     "out.zarr",
+    zarr_format=2,
     mode="a",
     encoding={"tier_d": {"compressor": compressor}},
 )
