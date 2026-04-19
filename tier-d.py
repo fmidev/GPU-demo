@@ -51,7 +51,7 @@ compressor = Blosc(cname="lz4", clevel=5, shuffle=1, blocksize=0)
 tier_d_attrs = {
     "standard_name": "relative_humidity",
     "long_name": "relative humidity",
-    "units": "1",
+    "units": "%",
 }
 if "grid_mapping" in ds["t"].attrs:
     tier_d_attrs["grid_mapping"] = ds["t"].attrs["grid_mapping"]
