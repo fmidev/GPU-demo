@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Union
+from typing import Iterator, Union
 
-from numcodecs import blosc,Blosc
+from numcodecs import blosc, Blosc
 import numpy as np
 import cupy as cp
 import cupyx
 
 import threading
 
-from time import perf_counter
-from functools import wraps
+ARRAY_SHAPE = (67, 65, 1069, 949)
+CHUNK_SHAPE = (24, 65, 200, 200)
+ARRAY_ATTRS = {
+    "grid_mapping": "lambert",
+    "coordinates": "a b latitude longitude",
+    "_ARRAY_DIMENSIONS": ["hybrid", "time", "y", "x"],
+}
 
 def write_blosc_array(
     path: Union[str, Path],
@@ -39,6 +45,7 @@ def write_blosc_array(
         }
     """
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     array = np.ascontiguousarray(array)
 
     codec = Blosc(
@@ -50,6 +57,32 @@ def write_blosc_array(
 
     compressed = codec.encode(array)
     path.write_bytes(compressed)
+
+def write_zarr_metadata(
+    array_dir: Union[str, Path],
+    *,
+    shape: tuple[int, ...],
+    chunks: tuple[int, ...],
+    compressor_config: dict,
+) -> None:
+    array_dir = Path(array_dir)
+    array_dir.mkdir(parents=True, exist_ok=True)
+
+    zarray = {
+        "chunks": list(chunks),
+        "compressor": compressor_config,
+        "dtype": np.dtype(np.float32).newbyteorder("<").str,
+        "fill_value": None,
+        "filters": None,
+        "order": "C",
+        "shape": list(shape),
+        "zarr_format": 2,
+    }
+
+    (array_dir / ".zarray").write_text(json.dumps(zarray, indent=2) + "\n", encoding="utf-8")
+    (array_dir / ".zattrs").write_text(
+        json.dumps(ARRAY_ATTRS, indent=2) + "\n", encoding="utf-8"
+    )
 
 def read_blosc_array(
     file_path: Union[str, Path],
@@ -116,6 +149,12 @@ def compute(i,j,k,buf):
     RH = 100 * (p * q) / (0.622 * E) * (p - E) / (p - (q*p) / 0.622)
     RH.get(out=buf,blocking=True)
 
+def pingpong() -> Iterator[np.ndarray]:
+    ping = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
+    pong = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
+    while True:
+        yield ping
+        yield pong
 
 a=cp.asarray(read_blosc_array(f"../data/dataset.zarr/a/0",dtype=np.float64,shape=(65)).astype(np.float32))
 b=cp.asarray(read_blosc_array(f"../data/dataset.zarr/b/0",dtype=np.float64,shape=(65)).astype(np.float32))
@@ -128,30 +167,26 @@ compressor = {
             "blocksize": 0,
             }
 
-streams = [cp.cuda.Stream(non_blocking=True) for _ in range(5)]
-ping = {"buffer" : cupyx.empty_pinned((24,65,200,200), dtype=np.float32), "stream" : cp.cuda.Stream(non_blocking=True)}
-pong = {"buffer" : cupyx.empty_pinned((24,65,200,200), dtype=np.float32), "stream" : cp.cuda.Stream(non_blocking=True)}
-
-pingpong = (ping,pong)
-
-io_thread = threading.Thread()
-
-prev = 0
-count = 0
+buffers = pingpong()
+io_thread: threading.Thread | None = None
 
 for i in range(3):
     for j in range(6):
         for k in range(5):
-            s = pingpong[count%2]["stream"]
-            with s:
-                compute(i,j,k,pingpong[count%2]["buffer"])
-            
-            try:
+            buffer = next(buffers)
+            compute(i,j,k,buffer)
+
+            if io_thread is not None:
                 io_thread.join()
-            except:
-                pass
 
-            io_thread = threading.Thread(target=write_blosc_array, args=(f"out.zarr/tier_c/{i}.0.{j}.{k}",pingpong[count%2]["buffer"],compressor,))
+            io_thread = threading.Thread(target=write_blosc_array, args=(f"out.zarr/tier_c/{i}.0.{j}.{k}",buffer,compressor,))
             io_thread.start()
+if io_thread is not None:
+    io_thread.join()
 
-            count += 1
+write_zarr_metadata(
+    "out.zarr/tier_c",
+    shape=ARRAY_SHAPE,
+    chunks=CHUNK_SHAPE,
+    compressor_config=compressor,
+)
