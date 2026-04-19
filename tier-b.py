@@ -167,7 +167,8 @@ buffers = [
 streams = [cp.cuda.Stream(non_blocking=True), cp.cuda.Stream(non_blocking=True)]
 threads: list[threading.Thread | None] = [None, None]
 count = 0
-prev = 0
+pong = 0
+
 prev_ijk: tuple[int, int, int] | None = None
 
 for i in range(3):
@@ -195,7 +196,7 @@ for i in range(3):
             count += 1
 
 streams[pong].synchronize()
-write_blosc_array(f"ds.zarr/tier_b/{i}.0.{j}.{k}",buffers[prev],compressor)
+write_blosc_array(f"ds.zarr/tier_b/{i}.0.{j}.{k}",buffers[pong],compressor)
 
 threads[ping].join()
 
