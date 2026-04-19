@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Iterator, Union
 
@@ -9,6 +10,9 @@ import cupy as cp
 import cupyx
 
 import threading
+
+ARRAY_SHAPE = (67, 65, 1069, 949)
+CHUNK_SHAPE = (24, 65, 200, 200)
 
 def write_blosc_array(
     path: Union[str, Path],
@@ -48,6 +52,30 @@ def write_blosc_array(
 
     compressed = codec.encode(array)
     path.write_bytes(compressed)
+
+def write_zarr_metadata(
+    array_dir: Union[str, Path],
+    *,
+    shape: tuple[int, ...],
+    chunks: tuple[int, ...],
+    compressor_config: dict,
+) -> None:
+    array_dir = Path(array_dir)
+    array_dir.mkdir(parents=True, exist_ok=True)
+
+    zarray = {
+        "chunks": list(chunks),
+        "compressor": compressor_config,
+        "dtype": np.dtype(np.float32).newbyteorder("<").str,
+        "fill_value": None,
+        "filters": None,
+        "order": "C",
+        "shape": list(shape),
+        "zarr_format": 2,
+    }
+
+    (array_dir / ".zarray").write_text(json.dumps(zarray, indent=2) + "\n", encoding="utf-8")
+    (array_dir / ".zattrs").write_text("{}\n", encoding="utf-8")
 
 def read_blosc_array(
     file_path: Union[str, Path],
@@ -148,3 +176,10 @@ for i in range(3):
             io_thread.start()
 if io_thread is not None:
     io_thread.join()
+
+write_zarr_metadata(
+    "out.zarr/tier_c",
+    shape=ARRAY_SHAPE,
+    chunks=CHUNK_SHAPE,
+    compressor_config=compressor,
+)
