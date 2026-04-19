@@ -16,6 +16,8 @@ with [CuPy](https://cupy.dev/), and writes compressed results asynchronously.
    - air density (`rho`)
 4. Copies results back to pinned host memory and writes compressed output chunks
    to `ds.zarr/rh/...` and `ds.zarr/rho/...`.
+5. Writes `.zarray` and `.zattrs` metadata files in `ds.zarr/rh/` and
+   `ds.zarr/rho/` after chunk processing completes.
 
 ## Requirements
 
