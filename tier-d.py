@@ -32,8 +32,8 @@ def relative_humidity_gpu(t_block, q_block, ps_block, a_coeff, b_coeff):
         6.107 * 10 ** (7.5 * T_gpu / (237 + T_gpu)),
         6.107 * 10 ** (9.5 * T_gpu / (265.5 + T_gpu)),
     )
-    rh_gpu = 100 * (p_gpu * q_gpu) / (0.622 * E_gpu) * (p_gpu - E_gpu) / (
-        p_gpu - (q_gpu * p_gpu) / 0.622
+    rh_gpu = 100 * (p_gpu * q_gpu) / (0.622 * E_gpu) * (
+        (p_gpu - E_gpu) / (p_gpu - (q_gpu * p_gpu) / 0.622)
     )
     return cp.asnumpy(rh_gpu)
 
