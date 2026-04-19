@@ -174,7 +174,7 @@ for i in range(3):
     for j in range(6):
         for k in range(5):
             cur = count % 2
-            io_thread = threads[cur]
+            io_thread = threads[prev]
             if io_thread is not None:
                 io_thread.join()
 
@@ -195,14 +195,10 @@ for i in range(3):
             prev = cur
             count += 1
 
-if count > 0 and prev_ijk is not None:
-    streams[prev].synchronize()
-    pi, pj, pk = prev_ijk
-    write_blosc_array(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[prev], compressor)
+streams[prev].synchronize()
+write_blosc_array(f"ds.zarr/tier_b/{i}.0.{j}.{k}",buffers[prev],compressor)
 
-for io_thread in threads:
-    if io_thread is not None:
-        io_thread.join()
+threads[cur].join()
 
 write_zarr_metadata(
     "out.zarr/tier_b",
