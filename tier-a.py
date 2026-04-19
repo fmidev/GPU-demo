@@ -166,10 +166,10 @@ def compute(i, j, k, buf):
     RH = 100 * (p * q) / (0.622 * E) * (p - E) / (p - (q*p) / 0.622)
     RH.get(out=buf,blocking=False)
 
-a_in_buf = np.empty((65,), dtype=np.float64)
-b_in_buf = np.empty((65,), dtype=np.float64)
-a = cp.asarray(read_blosc_array(f"../data/dataset.zarr/a/0", dst=a_in_buf, dtype=np.float64, shape=(65,)).astype(np.float32))
-b = cp.asarray(read_blosc_array(f"../data/dataset.zarr/b/0", dst=b_in_buf, dtype=np.float64, shape=(65,)).astype(np.float32))
+
+##############
+#   START   #
+#############
 
 compressor = {
             "id": "blosc",
@@ -185,13 +185,20 @@ buffers = [
     cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
     for _ in range(NUM_BUFFERS)
 ]
+
+a_in_buf = np.empty((65,), dtype=np.float64)
+b_in_buf = np.empty((65,), dtype=np.float64)
 t_in_buf = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
 q_in_buf = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
 ps_in_buf = cupyx.empty_pinned((24, 1, 200, 200), dtype=np.float32)
 streams = [cp.cuda.Stream(non_blocking=True) for _ in range(NUM_BUFFERS)]
 threads: list[threading.Thread | None] = [None for _ in range(NUM_BUFFERS)]
+
+a = cp.asarray(read_blosc_array(f"../data/dataset.zarr/a/0", dst=a_in_buf, dtype=np.float64, shape=(65,)).astype(np.float32))
+b = cp.asarray(read_blosc_array(f"../data/dataset.zarr/b/0", dst=b_in_buf, dtype=np.float64, shape=(65,)).astype(np.float32))
+
+
 count = 0
-prev = 0
 prev_ijk: tuple[int, int, int] | None = None
 
 for i in range(3):
@@ -201,7 +208,6 @@ for i in range(3):
 
             with streams[cur]:
                 compute(i, j, k, buffers[cur])
-            streams[cur].synchronize()
 
             if prev_ijk is not None:
                 streams[prev].synchronize()
