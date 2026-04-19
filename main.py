@@ -31,7 +31,11 @@ compressor = {
 CF_VERSION = "CF-1.8"
 ARRAY_SHAPE = (67, 65, 1069, 949)
 CHUNK_SHAPE = (24, 65, 200, 200)
-ARRAY_ATTRS = {"Conventions": CF_VERSION, "cf_conventions": CF_VERSION}
+ARRAY_ATTRS = {
+    "grid_mapping": "lambert",
+    "coordinates": "a b latitude longitude",
+    "_ARRAY_DIMENSIONS": ["time", "hybrid", "y", "x"],
+}
 
 
 async def load_ab():
@@ -194,14 +198,14 @@ async def process_one(
 
         await asyncio.gather(
             write_blosc_array(
-                f"ds.zarr/rh/{chunk_id}",
+                f"out.zarr/rh/{chunk_id}",
                 out_rh,
                 compressor,
                 chunk_id=chunk_id,
                 task_tag=f"{task_tag}:write_rh",
             ),
             write_blosc_array(
-                f"ds.zarr/rho/{chunk_id}",
+                f"out.zarr/rho/{chunk_id}",
                 out_rho,
                 compressor,
                 chunk_id=chunk_id,
@@ -225,7 +229,7 @@ async def main(compressor: dict) -> None:
     await asyncio.gather(
         asyncio.to_thread(
             write_zarr_array_metadata,
-            "ds.zarr/rh",
+            "out.zarr/rh",
             shape=ARRAY_SHAPE,
             chunks=CHUNK_SHAPE,
             dtype=np.float32,
@@ -234,7 +238,7 @@ async def main(compressor: dict) -> None:
         ),
         asyncio.to_thread(
             write_zarr_array_metadata,
-            "ds.zarr/rho",
+            "out.zarr/rho",
             shape=ARRAY_SHAPE,
             chunks=CHUNK_SHAPE,
             dtype=np.float32,

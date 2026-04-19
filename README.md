@@ -15,9 +15,9 @@ with [CuPy](https://cupy.dev/), and writes compressed results asynchronously.
    - relative humidity (`rh`)
    - air density (`rho`)
 4. Copies results back to pinned host memory and writes compressed output chunks
-   to `ds.zarr/rh/...` and `ds.zarr/rho/...`.
-5. Writes `.zarray` and `.zattrs` metadata files in `ds.zarr/rh/` and
-   `ds.zarr/rho/` after chunk processing completes.
+   to `out.zarr/rh/...` and `out.zarr/rho/...`.
+5. Writes `.zarray` and `.zattrs` metadata files in `out.zarr/rh/` and
+   `out.zarr/rho/` after chunk processing completes.
 
 ## Requirements
 
@@ -54,4 +54,4 @@ including file paths and chunk ids, plus total runtime, for example:
 ## Data paths
 
 The current example expects input data under `../data/dataset.zarr/` and writes
-results to `ds.zarr/` in the working directory.
+results to `out.zarr/` in the working directory.
