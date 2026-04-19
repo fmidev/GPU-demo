@@ -21,19 +21,20 @@ def relative_humidity_gpu(t_block, q_block, ps_block, a_coeff, b_coeff):
     ps_gpu = cp.asarray(ps_block)
     a_gpu = cp.asarray(a_coeff)
     b_gpu = cp.asarray(b_coeff)
+    ps_surface_gpu = ps_gpu[:, 0, :, :] if ps_gpu.ndim == 4 else ps_gpu
 
     p_gpu = (
         a_gpu[None, :, None, None]
-        + b_gpu[None, :, None, None] * ps_gpu.squeeze(axis=1)[:, None, :, :]
+        + b_gpu[None, :, None, None] * ps_surface_gpu[:, None, :, :]
     ) / 100
-    T_gpu = t_gpu - 273.15
-    E_gpu = cp.where(
-        T_gpu > -5,
-        6.107 * 10 ** (7.5 * T_gpu / (237 + T_gpu)),
-        6.107 * 10 ** (9.5 * T_gpu / (265.5 + T_gpu)),
+    t_celsius_gpu = t_gpu - 273.15
+    svp_gpu = cp.where(
+        t_celsius_gpu > -5,
+        6.107 * 10 ** (7.5 * t_celsius_gpu / (237 + t_celsius_gpu)),
+        6.107 * 10 ** (9.5 * t_celsius_gpu / (265.5 + t_celsius_gpu)),
     )
-    rh_gpu = 100 * (p_gpu * q_gpu) / (0.622 * E_gpu) * (
-        (p_gpu - E_gpu) / (p_gpu - (q_gpu * p_gpu) / 0.622)
+    rh_gpu = 100 * (p_gpu * q_gpu) / (0.622 * svp_gpu) * (
+        (p_gpu - svp_gpu) / (p_gpu - (q_gpu * p_gpu) / 0.622)
     )
     return cp.asnumpy(rh_gpu)
 
