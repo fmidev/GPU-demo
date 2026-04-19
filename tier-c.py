@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterator, Union
+from typing import Union
 
 from numcodecs import blosc, Blosc
 import numpy as np
@@ -149,13 +149,6 @@ def compute(i,j,k,buf):
     RH = 100 * (p * q) / (0.622 * E) * (p - E) / (p - (q*p) / 0.622)
     RH.get(out=buf,blocking=False)
 
-def pingpong() -> Iterator[np.ndarray]:
-    ping = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
-    pong = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
-    while True:
-        yield ping
-        yield pong
-
 a=cp.asarray(read_blosc_array(f"../data/dataset.zarr/a/0",dtype=np.float64,shape=(65)).astype(np.float32))
 b=cp.asarray(read_blosc_array(f"../data/dataset.zarr/b/0",dtype=np.float64,shape=(65)).astype(np.float32))
 
@@ -167,8 +160,10 @@ compressor = {
             "blocksize": 0,
             }
 
-buffers = pingpong()
-h_out_buf = [next(buffers), next(buffers)]
+buffers = [
+    cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32),
+    cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32),
+]
 streams = [cp.cuda.Stream(non_blocking=True), cp.cuda.Stream(non_blocking=True)]
 threads: list[threading.Thread | None] = [None, None]
 count = 0
@@ -184,7 +179,7 @@ for i in range(3):
                 io_thread.join()
 
             with streams[cur]:
-                compute(i,j,k,h_out_buf[cur])
+                compute(i,j,k,buffers[cur])
 
             streams[prev].synchronize()
 
@@ -192,7 +187,7 @@ for i in range(3):
                 pi, pj, pk = prev_ijk
                 threads[prev] = threading.Thread(
                     target=write_blosc_array,
-                    args=(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", h_out_buf[prev], compressor),
+                    args=(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[prev], compressor),
                 )
                 threads[prev].start()
 
@@ -203,7 +198,7 @@ for i in range(3):
 if count > 0 and prev_ijk is not None:
     streams[prev].synchronize()
     pi, pj, pk = prev_ijk
-    write_blosc_array(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", h_out_buf[prev], compressor)
+    write_blosc_array(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[prev], compressor)
 
 for io_thread in threads:
     if io_thread is not None:
