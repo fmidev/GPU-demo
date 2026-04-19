@@ -211,7 +211,7 @@ for i in range(3):
                 pi, pj, pk = prev_ijk
                 threads[prev] = threading.Thread(
                     target=write_blosc_array,
-                    args=(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[prev], compressor),
+                    args=(f"out.zarr/tier_a/{pi}.0.{pj}.{pk}", buffers[prev], compressor),
                 )
                 threads[prev].start()
 
@@ -225,14 +225,14 @@ if prev_ijk is not None:
     if io_thread is not None:
         io_thread.join()
     pi, pj, pk = prev_ijk
-    write_blosc_array(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[prev], compressor)
+    write_blosc_array(f"out.zarr/tier_a/{pi}.0.{pj}.{pk}", buffers[prev], compressor)
 
 for io_thread in threads:
     if io_thread is not None:
         io_thread.join()
 
 write_zarr_metadata(
-    "out.zarr/tier_b",
+    "out.zarr/tier_a",
     shape=ARRAY_SHAPE,
     chunks=CHUNK_SHAPE,
     compressor_config=compressor,
