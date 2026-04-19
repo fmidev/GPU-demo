@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+"""Tier A: multi-buffer GPU compute with overlapped threaded output writes.
+
+This file is intentionally verbose to show the low-level plumbing:
+- read compressed chunks,
+- run a GPU kernel-equivalent computation,
+- copy back to pinned host buffers,
+- write compressed output while the next chunk computes.
+"""
+
 import json
 import blosc
 from pathlib import Path
@@ -149,11 +158,13 @@ def read_blosc_array(
     return dst
 
 def compute(i, j, k, buf):
+    # Load one input chunk for each variable and stage it on the GPU.
     t = cp.asarray(read_blosc_array(f"../data/dataset.zarr/t/{i}.0.{j}.{k}", dst=t_in_buf, dtype=np.float32, shape=(24, 65, 200, 200)), blocking=False)
     q = cp.asarray(read_blosc_array(f"../data/dataset.zarr/q/{i}.0.{j}.{k}", dst=q_in_buf, dtype=np.float32, shape=(24, 65, 200, 200)), blocking=False)
     ps = cp.asarray(read_blosc_array(f"../data/dataset.zarr/ps/{i}.0.{j}.{k}", dst=ps_in_buf, dtype=np.float32, shape=(24, 1, 200, 200)), blocking=False)
     ps = cp.squeeze(ps, axis=1)
 
+    # Compute pressure, temperature in Celsius, then saturation vapor pressure.
     p = (a[None, :, None, None] + b[None, :, None, None] * ps[:, None, :, :]) / 100
     T = t - 273.15
 
@@ -163,6 +174,7 @@ def compute(i, j, k, buf):
         6.107 * 10 ** (9.5 * T / (265.5 + T)),
         )
 
+    # Relative humidity formula; copy to pinned host buffer asynchronously.
     RH = 100 * (p * q) / (0.622 * E) * (p - E) / (p - (q*p) / 0.622)
     RH.get(out=buf,blocking=False)
 
@@ -181,6 +193,7 @@ compressor = {
 
 NUM_BUFFERS = 4
 
+# Four pinned buffers + CUDA streams implement a rolling pipeline.
 buffers = [
     cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
     for _ in range(NUM_BUFFERS)
@@ -201,6 +214,7 @@ b = cp.asarray(read_blosc_array(f"../data/dataset.zarr/b/0", dst=b_in_buf, dtype
 count = 0
 prev_ijk: tuple[int, int, int] | None = None
 
+# Main loop: schedule current compute; flush and write previous finished buffer.
 for i in range(3):
     for j in range(6):
         for k in range(5):
@@ -210,6 +224,7 @@ for i in range(3):
                 compute(i, j, k, buffers[cur])
 
             if prev_ijk is not None:
+                # Wait until the previous stream is done before writing its buffer.
                 streams[prev].synchronize()
                 io_thread = threads[prev]
                 if io_thread is not None:
@@ -225,6 +240,7 @@ for i in range(3):
             prev = cur
             count += 1
 
+# Flush the final in-flight chunk.
 if prev_ijk is not None:
     streams[prev].synchronize()
     io_thread = threads[prev]
@@ -237,6 +253,7 @@ for io_thread in threads:
     if io_thread is not None:
         io_thread.join()
 
+# Emit minimal Zarr metadata so produced chunks are discoverable as an array.
 write_zarr_metadata(
     "out.zarr/tier_a",
     shape=ARRAY_SHAPE,

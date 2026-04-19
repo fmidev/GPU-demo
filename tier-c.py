@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Tier C: minimal ping/pong pipeline using a generator for host buffers.
+
+This version trades some explicit stream control for a compact structure:
+each chunk computes, then a background writer stores the previous result.
+"""
+
 import json
 from pathlib import Path
 from typing import Iterator, Union
@@ -132,11 +138,13 @@ def read_blosc_array(
     return np.frombuffer(decompressed, dtype=dtype).reshape(shape, order=order)
 
 def compute(i,j,k,buf):
+    # Read chunk inputs and move them to GPU memory for the RH calculation.
     t = cp.asarray(read_blosc_array(f"../data/dataset.zarr/t/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,65,200,200)))
     q = cp.asarray(read_blosc_array(f"../data/dataset.zarr/q/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,65,200,200)))
     ps = cp.asarray(read_blosc_array(f"../data/dataset.zarr/ps/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,1,200,200)))
     ps = cp.squeeze(ps, axis=1)
 
+    # Pressure and saturation-vapor-pressure terms feeding RH formula.
     p = (a[None, :, None, None] + b[None, :, None, None] * ps[:, None, :, :]) / 100
     T = t - 273.15
 
@@ -146,10 +154,12 @@ def compute(i,j,k,buf):
         6.107 * 10 ** (9.5 * T / (265.5 + T)),
         )
 
+    # Blocking host copy makes the buffer immediately safe for writer thread use.
     RH = 100 * (p * q) / (0.622 * E) * (p - E) / (p - (q*p) / 0.622)
     RH.get(out=buf,blocking=True)
 
 def pingpong() -> Iterator[np.ndarray]:
+    # Reuse two pinned buffers forever to avoid repeated allocations.
     ping = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
     pong = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
     while True:
@@ -170,6 +180,7 @@ compressor = {
 buffers = pingpong()
 io_thread: threading.Thread | None = None
 
+# For each chunk: compute into next buffer, then serialize previous write.
 for i in range(3):
     for j in range(6):
         for k in range(5):
@@ -179,11 +190,13 @@ for i in range(3):
             if io_thread is not None:
                 io_thread.join()
 
+            # Offload compressed write so CPU I/O can overlap next GPU compute.
             io_thread = threading.Thread(target=write_blosc_array, args=(f"out.zarr/tier_c/{i}.0.{j}.{k}",buffer,compressor,))
             io_thread.start()
 if io_thread is not None:
     io_thread.join()
 
+# Emit array metadata after all chunk files are present.
 write_zarr_metadata(
     "out.zarr/tier_c",
     shape=ARRAY_SHAPE,

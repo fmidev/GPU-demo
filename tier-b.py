@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Tier B: double-buffer (ping/pong) variant of the chunked GPU pipeline.
+
+Compared to tier-a, this keeps only two active buffers and alternates between
+them, which simplifies synchronization while still overlapping I/O and compute.
+"""
+
 import json
 from pathlib import Path
 from typing import Union
@@ -132,11 +138,13 @@ def read_blosc_array(
     return np.frombuffer(decompressed, dtype=dtype).reshape(shape, order=order)
 
 def compute(i,j,k,buf):
+    # Read one chunk per field, transfer to GPU, and normalize `ps` dimensions.
     t = cp.asarray(read_blosc_array(f"../data/dataset.zarr/t/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,65,200,200)))
     q = cp.asarray(read_blosc_array(f"../data/dataset.zarr/q/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,65,200,200)))
     ps = cp.asarray(read_blosc_array(f"../data/dataset.zarr/ps/{i}.0.{j}.{k}",dtype=np.float32,shape=(24,1,200,200)))
     ps = cp.squeeze(ps, axis=1)
 
+    # Same thermodynamic formulation as in other tiers.
     p = (a[None, :, None, None] + b[None, :, None, None] * ps[:, None, :, :]) / 100
     T = t - 273.15
 
@@ -146,6 +154,7 @@ def compute(i,j,k,buf):
         6.107 * 10 ** (9.5 * T / (265.5 + T)),
         )
 
+    # Copy result back into the currently selected host buffer.
     RH = 100 * (p * q) / (0.622 * E) * (p - E) / (p - (q*p) / 0.622)
     RH.get(out=buf,blocking=False)
 
@@ -171,6 +180,7 @@ pong = 0
 
 prev_ijk: tuple[int, int, int] | None = None
 
+# Loop over chunks, alternating ping/pong slots.
 for i in range(3):
     for j in range(6):
         for k in range(5):
@@ -178,6 +188,7 @@ for i in range(3):
             with streams[ping]:
                 compute(i,j,k,buffers[ping])
 
+            # Ensure the opposite slot has completed compute and write.
             streams[pong].synchronize()
             io_thread = threads[pong]
             if io_thread is not None:
@@ -185,6 +196,7 @@ for i in range(3):
                 
             if count > 0 and prev_ijk is not None:
                 pi, pj, pk = prev_ijk
+                # Write the previously computed chunk from the opposite slot.
                 threads[pong] = threading.Thread(
                     target=write_blosc_array,
                     args=(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[pong], compressor),
@@ -195,11 +207,13 @@ for i in range(3):
             pong = ping
             count += 1
 
+# Flush final chunk and wait for any outstanding writer.
 streams[pong].synchronize()
 write_blosc_array(f"ds.zarr/tier_b/{i}.0.{j}.{k}",buffers[pong],compressor)
 
 threads[ping].join()
 
+# Persist Zarr metadata for this tier output.
 write_zarr_metadata(
     "out.zarr/tier_b",
     shape=ARRAY_SHAPE,

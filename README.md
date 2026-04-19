@@ -19,6 +19,16 @@ with [CuPy](https://cupy.dev/), and writes compressed results asynchronously.
 5. Writes `.zarray` and `.zattrs` metadata files in `ds.zarr/rh/` and
    `ds.zarr/rho/` after chunk processing completes.
 
+## Annotated tier examples
+
+The repository also includes four progressively different RH pipelines with
+inline code annotations that explain what each stage is doing and why:
+
+- `tier-a.py`: low-level multi-buffer/stream pipeline with threaded writes.
+- `tier-b.py`: simplified ping/pong double-buffer variant.
+- `tier-c.py`: compact ping/pong workflow driven by a buffer generator.
+- `tier-d.py`: high-level xarray+dask map-blocks pipeline with GPU kernels.
+
 ## Requirements
 
 * Python ≥ 3.10
