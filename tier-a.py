@@ -110,7 +110,7 @@ def read_blosc_array(
     Returns
     -------
     np.ndarray
-        Decompressed NumPy array.
+        The same destination array (`dst`) after in-place decompression.
 
     Raises
     ------
@@ -122,6 +122,8 @@ def read_blosc_array(
     dtype = np.dtype(dtype)
     expected_nbytes = int(np.prod(shape)) * dtype.itemsize
 
+    if order not in ("C", "F"):
+        raise ValueError("`order` must be 'C' or 'F'.")
     if dst.dtype != dtype:
         raise ValueError(f"`dst.dtype` is {dst.dtype}, expected {dtype}.")
     if dst.shape != shape:
@@ -135,8 +137,6 @@ def read_blosc_array(
         raise ValueError("`dst` must be C-contiguous.")
     if order == "F" and not dst.flags.f_contiguous:
         raise ValueError("`dst` must be F-contiguous.")
-    if order not in ("C", "F"):
-        raise ValueError("`order` must be 'C' or 'F'.")
 
     compressed = file_path.read_bytes()
     nbytes, _cbytes, _blocksize = blosc.get_cbuffer_sizes(compressed)
@@ -148,10 +148,10 @@ def read_blosc_array(
     blosc.decompress_ptr(compressed, dst.ctypes.data)
     return dst
 
-def compute(i,j,k,buf,t_in_buf,q_in_buf,ps_in_buf):
-    t = cp.asarray(read_blosc_array(f"../data/dataset.zarr/t/{i}.0.{j}.{k}",t_in_buf,dtype=np.float32,shape=(24,65,200,200)),blocking=False)
-    q = cp.asarray(read_blosc_array(f"../data/dataset.zarr/q/{i}.0.{j}.{k}",q_in_buf,dtype=np.float32,shape=(24,65,200,200)),blocking=False)
-    ps = cp.asarray(read_blosc_array(f"../data/dataset.zarr/ps/{i}.0.{j}.{k}",ps_in_buf,dtype=np.float32,shape=(24,1,200,200)),blocking=False)
+def compute(i, j, k, buf, t_in_buf, q_in_buf, ps_in_buf):
+    t = cp.asarray(read_blosc_array(f"../data/dataset.zarr/t/{i}.0.{j}.{k}", dst=t_in_buf, dtype=np.float32, shape=(24,65,200,200)),blocking=False)
+    q = cp.asarray(read_blosc_array(f"../data/dataset.zarr/q/{i}.0.{j}.{k}", dst=q_in_buf, dtype=np.float32, shape=(24,65,200,200)),blocking=False)
+    ps = cp.asarray(read_blosc_array(f"../data/dataset.zarr/ps/{i}.0.{j}.{k}", dst=ps_in_buf, dtype=np.float32, shape=(24,1,200,200)),blocking=False)
     ps = cp.squeeze(ps, axis=1)
 
     p = (a[None, :, None, None] + b[None, :, None, None] * ps[:, None, :, :]) / 100
@@ -168,8 +168,8 @@ def compute(i,j,k,buf,t_in_buf,q_in_buf,ps_in_buf):
 
 a_in_buf = np.empty((65,), dtype=np.float64)
 b_in_buf = np.empty((65,), dtype=np.float64)
-a=cp.asarray(read_blosc_array(f"../data/dataset.zarr/a/0",a_in_buf,dtype=np.float64,shape=(65)).astype(np.float32))
-b=cp.asarray(read_blosc_array(f"../data/dataset.zarr/b/0",b_in_buf,dtype=np.float64,shape=(65)).astype(np.float32))
+a = cp.asarray(read_blosc_array(f"../data/dataset.zarr/a/0", dst=a_in_buf, dtype=np.float64, shape=(65,)).astype(np.float32))
+b = cp.asarray(read_blosc_array(f"../data/dataset.zarr/b/0", dst=b_in_buf, dtype=np.float64, shape=(65,)).astype(np.float32))
 
 compressor = {
             "id": "blosc",
@@ -180,6 +180,7 @@ compressor = {
             }
 
 NUM_BUFFERS = 4
+PIPELINE_DEPTH = NUM_BUFFERS - 1
 
 buffers = [
     cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
@@ -212,18 +213,15 @@ for i in range(3):
                 threads[cur] = None
 
             with streams[cur]:
-                compute(i,j,k,buffers[cur],t_in_bufs[cur],q_in_bufs[cur],ps_in_bufs[cur])
+                compute(i, j, k, buffers[cur], t_in_bufs[cur], q_in_bufs[cur], ps_in_bufs[cur])
 
             chunk_ids[cur] = (i, j, k)
 
-            write_slot = count - (NUM_BUFFERS - 1)
+            write_slot = count - PIPELINE_DEPTH
             if write_slot >= 0:
                 write_idx = write_slot % NUM_BUFFERS
                 streams[write_idx].synchronize()
-                chunk_id = chunk_ids[write_idx]
-                if chunk_id is None:
-                    raise RuntimeError("Missing chunk id for write slot.")
-                pi, pj, pk = chunk_id
+                pi, pj, pk = chunk_ids[write_idx]
                 threads[write_idx] = threading.Thread(
                     target=write_blosc_array,
                     args=(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[write_idx], compressor),
@@ -232,7 +230,7 @@ for i in range(3):
 
             count += 1
 
-flush_start = max(0, count - (NUM_BUFFERS - 1))
+flush_start = max(0, count - PIPELINE_DEPTH)
 for write_slot in range(flush_start, count):
     write_idx = write_slot % NUM_BUFFERS
     io_thread = threads[write_idx]
@@ -240,11 +238,8 @@ for write_slot in range(flush_start, count):
         io_thread.join()
         threads[write_idx] = None
     streams[write_idx].synchronize()
-    chunk_id = chunk_ids[write_idx]
-    if chunk_id is None:
-        raise RuntimeError("Missing chunk id during flush.")
-    pi, pj, pk = chunk_id
-    write_blosc_array(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}",buffers[write_idx],compressor)
+    pi, pj, pk = chunk_ids[write_idx]
+    write_blosc_array(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[write_idx], compressor)
 
 for io_thread in threads:
     if io_thread is not None:
