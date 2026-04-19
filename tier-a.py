@@ -201,8 +201,9 @@ for i in range(3):
 
             with streams[cur]:
                 compute(i, j, k, buffers[cur])
+            streams[cur].synchronize()
 
-            if count > 0 and prev_ijk is not None:
+            if prev_ijk is not None:
                 streams[prev].synchronize()
                 io_thread = threads[prev]
                 if io_thread is not None:
