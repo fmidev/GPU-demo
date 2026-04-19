@@ -66,7 +66,6 @@ tier_d = xr.DataArray(
 
 tier_d.to_dataset().to_zarr(
     "out.zarr",
-    zarr_format=2,
-    mode="w",
+    mode="a",
     encoding={"tier_d": {"compressor": compressor}},
 )
