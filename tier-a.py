@@ -148,10 +148,10 @@ def read_blosc_array(
     blosc.decompress_ptr(compressed, dst.ctypes.data)
     return dst
 
-def compute(i, j, k, buf, t_in_buf, q_in_buf, ps_in_buf):
-    t = cp.asarray(read_blosc_array(f"../data/dataset.zarr/t/{i}.0.{j}.{k}", dst=t_in_buf, dtype=np.float32, shape=(24,65,200,200)),blocking=False)
-    q = cp.asarray(read_blosc_array(f"../data/dataset.zarr/q/{i}.0.{j}.{k}", dst=q_in_buf, dtype=np.float32, shape=(24,65,200,200)),blocking=False)
-    ps = cp.asarray(read_blosc_array(f"../data/dataset.zarr/ps/{i}.0.{j}.{k}", dst=ps_in_buf, dtype=np.float32, shape=(24,1,200,200)),blocking=False)
+def compute(i, j, k, buf):
+    t = cp.asarray(read_blosc_array(f"../data/dataset.zarr/t/{i}.0.{j}.{k}", dst=t_in_buf, dtype=np.float32, shape=(24, 65, 200, 200)), blocking=False)
+    q = cp.asarray(read_blosc_array(f"../data/dataset.zarr/q/{i}.0.{j}.{k}", dst=q_in_buf, dtype=np.float32, shape=(24, 65, 200, 200)), blocking=False)
+    ps = cp.asarray(read_blosc_array(f"../data/dataset.zarr/ps/{i}.0.{j}.{k}", dst=ps_in_buf, dtype=np.float32, shape=(24, 1, 200, 200)), blocking=False)
     ps = cp.squeeze(ps, axis=1)
 
     p = (a[None, :, None, None] + b[None, :, None, None] * ps[:, None, :, :]) / 100
@@ -180,66 +180,51 @@ compressor = {
             }
 
 NUM_BUFFERS = 4
-PIPELINE_DEPTH = NUM_BUFFERS - 1
 
 buffers = [
     cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
     for _ in range(NUM_BUFFERS)
 ]
-t_in_bufs = [
-    cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
-    for _ in range(NUM_BUFFERS)
-]
-q_in_bufs = [
-    cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
-    for _ in range(NUM_BUFFERS)
-]
-ps_in_bufs = [
-    cupyx.empty_pinned((24, 1, 200, 200), dtype=np.float32)
-    for _ in range(NUM_BUFFERS)
-]
+t_in_buf = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
+q_in_buf = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
+ps_in_buf = cupyx.empty_pinned((24, 1, 200, 200), dtype=np.float32)
 streams = [cp.cuda.Stream(non_blocking=True) for _ in range(NUM_BUFFERS)]
 threads: list[threading.Thread | None] = [None for _ in range(NUM_BUFFERS)]
-chunk_ids: list[tuple[int, int, int] | None] = [None for _ in range(NUM_BUFFERS)]
 count = 0
+prev = 0
+prev_ijk: tuple[int, int, int] | None = None
 
 for i in range(3):
     for j in range(6):
         for k in range(5):
             cur = count % NUM_BUFFERS
-            io_thread = threads[cur]
-            if io_thread is not None:
-                io_thread.join()
-                threads[cur] = None
 
             with streams[cur]:
-                compute(i, j, k, buffers[cur], t_in_bufs[cur], q_in_bufs[cur], ps_in_bufs[cur])
+                compute(i, j, k, buffers[cur])
 
-            chunk_ids[cur] = (i, j, k)
-
-            write_slot = count - PIPELINE_DEPTH
-            if write_slot >= 0:
-                write_idx = write_slot % NUM_BUFFERS
-                streams[write_idx].synchronize()
-                pi, pj, pk = chunk_ids[write_idx]
-                threads[write_idx] = threading.Thread(
+            if count > 0 and prev_ijk is not None:
+                streams[prev].synchronize()
+                io_thread = threads[prev]
+                if io_thread is not None:
+                    io_thread.join()
+                pi, pj, pk = prev_ijk
+                threads[prev] = threading.Thread(
                     target=write_blosc_array,
-                    args=(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[write_idx], compressor),
+                    args=(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[prev], compressor),
                 )
-                threads[write_idx].start()
+                threads[prev].start()
 
+            prev_ijk = (i, j, k)
+            prev = cur
             count += 1
 
-flush_start = max(0, count - PIPELINE_DEPTH)
-for write_slot in range(flush_start, count):
-    write_idx = write_slot % NUM_BUFFERS
-    io_thread = threads[write_idx]
+if prev_ijk is not None:
+    streams[prev].synchronize()
+    io_thread = threads[prev]
     if io_thread is not None:
         io_thread.join()
-        threads[write_idx] = None
-    streams[write_idx].synchronize()
-    pi, pj, pk = chunk_ids[write_idx]
-    write_blosc_array(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[write_idx], compressor)
+    pi, pj, pk = prev_ijk
+    write_blosc_array(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[prev], compressor)
 
 for io_thread in threads:
     if io_thread is not None:
