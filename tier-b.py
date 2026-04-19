@@ -196,10 +196,17 @@ for i in range(3):
             pong = ping
             count += 1
 
-streams[pong].synchronize()
-write_blosc_array(f"ds.zarr/tier_b/{i}.0.{j}.{k}",buffers[pong],compressor)
+if prev_ijk is not None:
+    streams[pong].synchronize()
+    io_thread = threads[pong]
+    if io_thread is not None:
+        io_thread.join()
+    pi, pj, pk = prev_ijk
+    write_blosc_array(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[pong], compressor)
 
-threads[ping].join()
+for io_thread in threads:
+    if io_thread is not None:
+        io_thread.join()
 
 write_zarr_metadata(
     "out.zarr/tier_b",
