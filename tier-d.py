@@ -7,6 +7,13 @@ from numcodecs import Blosc
 import zarr
 
 dask.config.set({"array.chunk-size": 249600000})
+PRESSURE_SCALE = 100.0
+KELVIN_TO_CELSIUS = 273.15
+EPSILON = 0.622
+RH_SCALE = 100.0
+FREEZING_THRESHOLD_C = -5.0
+WARM_A, WARM_B, WARM_C = 6.107, 7.5, 237.0
+COLD_A, COLD_B, COLD_C = 6.107, 9.5, 265.5
 
 ds = xr.open_zarr("../data/dataset.zarr")
 a = ds["a"].astype("float32").data
@@ -26,15 +33,15 @@ def relative_humidity_gpu(t_block, q_block, ps_block, a_coeff, b_coeff):
     p_gpu = (
         a_gpu[None, :, None, None]
         + b_gpu[None, :, None, None] * ps_surface_gpu[:, None, :, :]
-    ) / 100
-    t_celsius_gpu = t_gpu - 273.15
+    ) / PRESSURE_SCALE
+    t_celsius_gpu = t_gpu - KELVIN_TO_CELSIUS
     svp_gpu = cp.where(
-        t_celsius_gpu > -5,
-        6.107 * 10 ** (7.5 * t_celsius_gpu / (237 + t_celsius_gpu)),
-        6.107 * 10 ** (9.5 * t_celsius_gpu / (265.5 + t_celsius_gpu)),
+        t_celsius_gpu > FREEZING_THRESHOLD_C,
+        WARM_A * 10 ** (WARM_B * t_celsius_gpu / (WARM_C + t_celsius_gpu)),
+        COLD_A * 10 ** (COLD_B * t_celsius_gpu / (COLD_C + t_celsius_gpu)),
     )
-    rh_gpu = 100 * (p_gpu * q_gpu) / (0.622 * svp_gpu) * (
-        (p_gpu - svp_gpu) / (p_gpu - (q_gpu * p_gpu) / 0.622)
+    rh_gpu = RH_SCALE * (p_gpu * q_gpu) / (EPSILON * svp_gpu) * (
+        (p_gpu - svp_gpu) / (p_gpu - (q_gpu * p_gpu) / EPSILON)
     )
     return cp.asnumpy(rh_gpu)
 
