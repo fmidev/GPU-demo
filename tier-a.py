@@ -205,15 +205,15 @@ for i in range(3):
     for j in range(6):
         for k in range(5):
             cur = count % NUM_BUFFERS
-
+            io_thread = threads[cur]
+                if io_thread is not None:
+                    io_thread.join()
+                    
             with streams[cur]:
                 compute(i, j, k, buffers[cur])
 
             if prev_ijk is not None:
                 streams[prev].synchronize()
-                io_thread = threads[prev]
-                if io_thread is not None:
-                    io_thread.join()
                 pi, pj, pk = prev_ijk
                 threads[prev] = threading.Thread(
                     target=write_blosc_array,
