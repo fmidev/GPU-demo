@@ -4,16 +4,8 @@ import cupy as cp
 import dask.array as da
 import dask
 from numcodecs import Blosc
-import zarr
 
 dask.config.set({"array.chunk-size": 249600000})
-PRESSURE_SCALE = 100.0
-KELVIN_TO_CELSIUS = 273.15
-EPSILON = 0.622
-RH_SCALE = 100.0
-FREEZING_THRESHOLD_C = -5.0
-WARM_A, WARM_B, WARM_C = 6.107, 7.5, 237.0
-COLD_A, COLD_B, COLD_C = 6.107, 9.5, 265.5
 
 ds = xr.open_zarr("../data/dataset.zarr")
 a = ds["a"].astype("float32").data
@@ -33,37 +25,48 @@ def relative_humidity_gpu(t_block, q_block, ps_block, a_coeff, b_coeff):
     p_gpu = (
         a_gpu[None, :, None, None]
         + b_gpu[None, :, None, None] * ps_surface_gpu[:, None, :, :]
-    ) / PRESSURE_SCALE
-    t_celsius_gpu = t_gpu - KELVIN_TO_CELSIUS
+    ) / 100
+    t_celsius_gpu = t_gpu - 273.15
     svp_gpu = cp.where(
-        t_celsius_gpu > FREEZING_THRESHOLD_C,
-        WARM_A * 10 ** (WARM_B * t_celsius_gpu / (WARM_C + t_celsius_gpu)),
-        COLD_A * 10 ** (COLD_B * t_celsius_gpu / (COLD_C + t_celsius_gpu)),
+        t_celsius_gpu > -5,
+        6.107 * 10 ** (7.5 * t_celsius_gpu / (237 + t_celsius_gpu)),
+        6.107 * 10 ** (9.5 * t_celsius_gpu / (265.5 + t_celsius_gpu)),
     )
-    rh_gpu = RH_SCALE * (p_gpu * q_gpu) / (EPSILON * svp_gpu) * (
-        (p_gpu - svp_gpu) / (p_gpu - (q_gpu * p_gpu) / EPSILON)
+    rh_gpu = 100 * (p_gpu * q_gpu) / (0.622 * svp_gpu) * (
+        (p_gpu - svp_gpu) / (p_gpu - (q_gpu * p_gpu) / 0.622)
     )
     return cp.asnumpy(rh_gpu)
 
 z = da.map_blocks(
-        relative_humidity_gpu,
-        t,
-        q,
-        ps,
-        a,
-        b,
-        dtype=np.float32
+    relative_humidity_gpu,
+    t,
+    q,
+    ps,
+    a,
+    b,
+    dtype=np.float32,
 )
 
 compressor = Blosc(cname="lz4", clevel=5, shuffle=1, blocksize=0)
-target = zarr.open(
-    "out.zarr",
-    mode="w",
-    shape=z.shape,
-    chunks=z.chunksize,
-    dtype=z.dtype,
-    compressor=compressor,
-    zarr_format=2,
+tier_d_attrs = {
+    "standard_name": "relative_humidity",
+    "long_name": "relative humidity",
+    "units": "1",
+}
+if "grid_mapping" in ds["t"].attrs:
+    tier_d_attrs["grid_mapping"] = ds["t"].attrs["grid_mapping"]
+
+tier_d = xr.DataArray(
+    z,
+    dims=ds["t"].dims,
+    coords=ds["t"].coords,
+    name="tier_d",
+    attrs=tier_d_attrs,
 )
 
-z.to_zarr(target, overwrite=True)
+tier_d.to_dataset().to_zarr(
+    "out.zarr",
+    zarr_format=2,
+    mode="w",
+    encoding={"tier_d": {"compressor": compressor}},
+)
