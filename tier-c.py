@@ -16,7 +16,7 @@ CHUNK_SHAPE = (24, 65, 200, 200)
 ARRAY_ATTRS = {
     "grid_mapping": "lambert",
     "coordinates": "a b latitude longitude",
-    "_ARRAY_DIMENSIONS": ["hybrid", "time", "y", "x"],
+    "_ARRAY_DIMENSIONS": ["time", "hybrid", "y", "x"],
 }
 
 def write_blosc_array(
