@@ -8,7 +8,7 @@ import zarr
 
 dask.config.set({"array.chunk-size": 249600000})
 
-ds = xr.open_zarr("dataset.zarr")
+ds = xr.open_zarr("../data/dataset.zarr")
 x = ds["t"].data
 y = ds["q"].data
 
@@ -33,7 +33,7 @@ target = zarr.open(
     chunks=z.chunksize,
     dtype=z.dtype,
     compressor=compressor,
-    zarr_format=2,   # or zarr_version=2 on older APIs
+    zarr_format=2,
 )
 
 z.to_zarr(target, overwrite=True)
