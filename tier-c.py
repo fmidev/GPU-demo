@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Union
+from typing import Iterator, Union
 
-from numcodecs import blosc,Blosc
+from numcodecs import blosc, Blosc
 import numpy as np
 import cupy as cp
 import cupyx
 
 import threading
-
-from time import perf_counter
-from functools import wraps
 
 def write_blosc_array(
     path: Union[str, Path],
@@ -39,6 +36,7 @@ def write_blosc_array(
         }
     """
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     array = np.ascontiguousarray(array)
 
     codec = Blosc(
@@ -116,6 +114,12 @@ def compute(i,j,k,buf):
     RH = 100 * (p * q) / (0.622 * E) * (p - E) / (p - (q*p) / 0.622)
     RH.get(out=buf,blocking=True)
 
+def pingpong() -> Iterator[np.ndarray]:
+    ping = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
+    pong = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
+    while True:
+        yield ping
+        yield pong
 
 a=cp.asarray(read_blosc_array(f"../data/dataset.zarr/a/0",dtype=np.float64,shape=(65)).astype(np.float32))
 b=cp.asarray(read_blosc_array(f"../data/dataset.zarr/b/0",dtype=np.float64,shape=(65)).astype(np.float32))
@@ -128,30 +132,19 @@ compressor = {
             "blocksize": 0,
             }
 
-streams = [cp.cuda.Stream(non_blocking=True) for _ in range(5)]
-ping = {"buffer" : cupyx.empty_pinned((24,65,200,200), dtype=np.float32), "stream" : cp.cuda.Stream(non_blocking=True)}
-pong = {"buffer" : cupyx.empty_pinned((24,65,200,200), dtype=np.float32), "stream" : cp.cuda.Stream(non_blocking=True)}
-
-pingpong = (ping,pong)
-
-io_thread = threading.Thread()
-
-prev = 0
-count = 0
+buffers = pingpong()
+io_thread: threading.Thread | None = None
 
 for i in range(3):
     for j in range(6):
         for k in range(5):
-            s = pingpong[count%2]["stream"]
-            with s:
-                compute(i,j,k,pingpong[count%2]["buffer"])
-            
-            try:
+            buffer = next(buffers)
+            compute(i,j,k,buffer)
+
+            if io_thread is not None:
                 io_thread.join()
-            except:
-                pass
 
-            io_thread = threading.Thread(target=write_blosc_array, args=(f"out.zarr/tier_c/{i}.0.{j}.{k}",pingpong[count%2]["buffer"],compressor,))
+            io_thread = threading.Thread(target=write_blosc_array, args=(f"out.zarr/tier_c/{i}.0.{j}.{k}",buffer,compressor,))
             io_thread.start()
-
-            count += 1
+if io_thread is not None:
+    io_thread.join()
