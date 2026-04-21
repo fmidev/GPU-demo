@@ -14,7 +14,7 @@ import threading
 ARRAY_SHAPE = (67, 65, 1069, 949)
 CHUNK_SHAPE = (24, 65, 200, 200)
 ARRAY_ATTRS = {
-    "grid_mapping": "lambert",
+    "grid_mapcurrent": "lambert",
     "coordinates": "a b latitude longitude",
     "_ARRAY_DIMENSIONS": ["time", "hybrid", "y", "x"],
 }
@@ -103,7 +103,7 @@ def read_blosc_array(
     shape
         Shape of the original array, e.g. (1000, 256).
     order
-        Memory order used when reshaping. Usually "C".
+        Memory order used when reshacurrent. Usually "C".
 
     Returns
     -------
@@ -163,46 +163,52 @@ compressor = {
 buffers = [
     cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32),
     cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32),
+    cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32),
 ]
-streams = [cp.cuda.Stream(non_blocking=True), cp.cuda.Stream(non_blocking=True)]
-threads: list[threading.Thread | None] = [None, None]
+streams = [
+        cp.cuda.Stream(non_blocking=True), 
+        cp.cuda.Stream(non_blocking=True),
+        cp.cuda.Stream(non_blocking=True)
+]
+
+threads: list[threading.Thread | None] = [None, None, None]
 count = 0
-pong = 0
+previous = 0
 
 prev_ijk: tuple[int, int, int] | None = None
 
 for i in range(3):
     for j in range(6):
         for k in range(5):
-            ping = count % 2
-            io_thread = threads[ping]
+            current = count % 3
+            io_thread = threads[current]
             if io_thread is not None:
                 io_thread.join()
                 
-            with streams[ping]:
-                compute(i,j,k,buffers[ping])
+            with streams[current]:
+                compute(i,j,k,buffers[current])
 
-            streams[pong].synchronize()
+            streams[previous].synchronize()
                 
             if count > 0 and prev_ijk is not None:
                 pi, pj, pk = prev_ijk
-                threads[pong] = threading.Thread(
+                threads[previous] = threading.Thread(
                     target=write_blosc_array,
-                    args=(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[pong], compressor),
+                    args=(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[previous], compressor),
                 )
-                threads[pong].start()
+                threads[previous].start()
 
             prev_ijk = (i, j, k)
-            pong = ping
+            previous = current
             count += 1
 
 if prev_ijk is not None:
-    streams[pong].synchronize()
-    io_thread = threads[pong]
+    streams[previous].synchronize()
+    io_thread = threads[previous]
     if io_thread is not None:
         io_thread.join()
     pi, pj, pk = prev_ijk
-    write_blosc_array(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[pong], compressor)
+    write_blosc_array(f"out.zarr/tier_b/{pi}.0.{pj}.{pk}", buffers[previous], compressor)
 
 for io_thread in threads:
     if io_thread is not None:
