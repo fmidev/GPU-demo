@@ -1,3 +1,6 @@
+import argparse
+from pathlib import Path
+
 import xarray as xr
 import numpy as np
 import cupy as cp
@@ -7,7 +10,19 @@ from numcodecs import Blosc
 
 dask.config.set({"array.chunk-size": 249600000})
 
-ds = xr.open_zarr("../data/dataset.zarr")
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-zarr", default="../data/dataset.zarr")
+    parser.add_argument("--output-zarr", default="out.zarr")
+    return parser.parse_args()
+
+
+args = parse_args()
+input_zarr = Path(args.input_zarr)
+output_zarr = Path(args.output_zarr)
+
+ds = xr.open_zarr(input_zarr)
 a = ds["a"].astype("float32").data
 b = ds["b"].astype("float32").data
 t = ds["t"].data
@@ -66,7 +81,7 @@ tier_d = xr.DataArray(
 
 # Assumes base output dataset already exists; append only `tier_d`.
 tier_d.to_dataset().to_zarr(
-    "out.zarr",
+    output_zarr,
     zarr_format=2,
     mode="a",
     encoding={"tier_d": {"compressor": compressor}},

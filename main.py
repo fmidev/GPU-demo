@@ -1,5 +1,7 @@
 import asyncio
+import argparse
 import logging
+from pathlib import Path
 from time import perf_counter
 
 import cupy as cp
@@ -38,14 +40,21 @@ ARRAY_ATTRS = {
 }
 
 
-async def load_ab():
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-zarr", default="../data/dataset.zarr")
+    parser.add_argument("--output-zarr", default="out.zarr")
+    return parser.parse_args()
+
+
+async def load_ab(input_zarr: Path):
     """Load hybrid-pressure coefficients from disk."""
     a_buf = np.empty((65,), dtype=np.float64)
     b_buf = np.empty((65,), dtype=np.float64)
 
     await asyncio.gather(
         read_blosc_array(
-            "../data/dataset.zarr/a/0",
+            input_zarr / "a" / "0",
             a_buf,
             dtype=np.float64,
             shape=(65,),
@@ -53,7 +62,7 @@ async def load_ab():
             task_tag="load_coefficients",
         ),
         read_blosc_array(
-            "../data/dataset.zarr/b/0",
+            input_zarr / "b" / "0",
             b_buf,
             dtype=np.float64,
             shape=(65,),
@@ -149,6 +158,8 @@ async def process_one(
     i: int,
     j: int,
     k: int,
+    input_zarr: Path,
+    output_zarr: Path,
     compressor: dict,
     sem: asyncio.Semaphore,
 ) -> int:
@@ -166,7 +177,7 @@ async def process_one(
 
         await asyncio.gather(
             read_blosc_array(
-                f"../data/dataset.zarr/t/{chunk_id}",
+                input_zarr / "t" / chunk_id,
                 t_h,
                 dtype=np.float32,
                 shape=(24, 65, 200, 200),
@@ -174,7 +185,7 @@ async def process_one(
                 task_tag=f"{task_tag}:read_t",
             ),
             read_blosc_array(
-                f"../data/dataset.zarr/q/{chunk_id}",
+                input_zarr / "q" / chunk_id,
                 q_h,
                 dtype=np.float32,
                 shape=(24, 65, 200, 200),
@@ -182,7 +193,7 @@ async def process_one(
                 task_tag=f"{task_tag}:read_q",
             ),
             read_blosc_array(
-                f"../data/dataset.zarr/ps/{chunk_id}",
+                input_zarr / "ps" / chunk_id,
                 ps_h,
                 dtype=np.float32,
                 shape=(24, 1, 200, 200),
@@ -198,14 +209,14 @@ async def process_one(
 
         await asyncio.gather(
             write_blosc_array(
-                f"out.zarr/rh/{chunk_id}",
+                output_zarr / "rh" / chunk_id,
                 out_rh,
                 compressor,
                 chunk_id=chunk_id,
                 task_tag=f"{task_tag}:write_rh",
             ),
             write_blosc_array(
-                f"out.zarr/rho/{chunk_id}",
+                output_zarr / "rho" / chunk_id,
                 out_rho,
                 compressor,
                 chunk_id=chunk_id,
@@ -214,12 +225,12 @@ async def process_one(
         )
 
 
-async def main(compressor: dict) -> None:
+async def main(input_zarr: Path, output_zarr: Path, compressor: dict) -> None:
     """Schedule chunk processing with bounded concurrency."""
     sem = asyncio.Semaphore(4)
 
     tasks = [
-        asyncio.create_task(process_one(i, j, k, compressor, sem))
+        asyncio.create_task(process_one(i, j, k, input_zarr, output_zarr, compressor, sem))
         for i in range(3)
         for j in range(6)
         for k in range(5)
@@ -229,7 +240,7 @@ async def main(compressor: dict) -> None:
     await asyncio.gather(
         asyncio.to_thread(
             write_zarr_array_metadata,
-            "out.zarr/rh",
+            output_zarr / "rh",
             shape=ARRAY_SHAPE,
             chunks=CHUNK_SHAPE,
             dtype=np.float32,
@@ -238,7 +249,7 @@ async def main(compressor: dict) -> None:
         ),
         asyncio.to_thread(
             write_zarr_array_metadata,
-            "out.zarr/rho",
+            output_zarr / "rho",
             shape=ARRAY_SHAPE,
             chunks=CHUNK_SHAPE,
             dtype=np.float32,
@@ -249,6 +260,9 @@ async def main(compressor: dict) -> None:
 
 
 if __name__ == "__main__":
+    args = parse_args()
+    input_zarr = Path(args.input_zarr)
+    output_zarr = Path(args.output_zarr)
     logger = logging.getLogger("main")
     logging.basicConfig(
         level=logging.INFO,
@@ -256,9 +270,9 @@ if __name__ == "__main__":
     )
     # Load coefficients once, then process all chunk tasks.
     t = perf_counter()
-    a, b = asyncio.run(load_ab())
+    a, b = asyncio.run(load_ab(input_zarr))
     a = cp.asarray(a)
     b = cp.asarray(b)
 
-    asyncio.run(main(compressor))
+    asyncio.run(main(input_zarr, output_zarr, compressor))
     logger.info("task=run_total elapsed_s=%.6f", perf_counter() - t)
