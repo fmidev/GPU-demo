@@ -63,6 +63,10 @@ def write_blosc_array(
     )
 
     compressed = codec.encode(array)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
     path.write_bytes(compressed)
 
 def write_zarr_metadata(
