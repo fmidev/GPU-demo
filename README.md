@@ -8,16 +8,16 @@ with [CuPy](https://cupy.dev/), and writes compressed results asynchronously.
 `main.py` orchestrates an async pipeline:
 
 1. Loads hybrid-pressure coefficients (`a`, `b`) from
-   `../data/dataset.zarr/a/0` and `../data/dataset.zarr/b/0`.
+   `<input-zarr>/a/0` and `<input-zarr>/b/0`.
 2. Reads temperature (`t`), humidity (`q`), and surface pressure (`ps`) chunks
    using `read_blosc_array` from `blosc_async.py`.
 3. Launches two GPU computations on separate CUDA streams:
    - relative humidity (`rh`)
    - air density (`rho`)
 4. Copies results back to pinned host memory and writes compressed output chunks
-   to `out.zarr/rh/...` and `out.zarr/rho/...`.
-5. Writes `.zarray` and `.zattrs` metadata files in `out.zarr/rh/` and
-   `out.zarr/rho/` after chunk processing completes.
+   to `<output-zarr>/rh/...` and `<output-zarr>/rho/...`.
+5. Writes `.zarray` and `.zattrs` metadata files in `<output-zarr>/rh/` and
+   `<output-zarr>/rho/` after chunk processing completes.
 
 ## Requirements
 
@@ -39,7 +39,7 @@ pip install -r requirements.txt
 From the repository root:
 
 ```bash
-python main.py
+python main.py --input-zarr ../data/dataset.zarr --output-zarr out.zarr
 ```
 
 Expected output includes INFO logs with timings for Blosc I/O and GPU tasks,
@@ -53,5 +53,10 @@ including file paths and chunk ids, plus total runtime, for example:
 
 ## Data paths
 
-The current example expects input data under `../data/dataset.zarr/` and writes
-results to `out.zarr/` in the working directory.
+`main.py`, `tier-a.py`, `tier-b.py`, `tier-c.py`, and `tier-d.py` all accept:
+
+- `--input-zarr` (default: `../data/dataset.zarr`)
+- `--output-zarr` (default: `out.zarr`)
+
+The scripts keep variable directories under the zarr trunks (for example
+`<input-zarr>/t/...`, `<output-zarr>/rh/...`, `<output-zarr>/tier_a/...`).
