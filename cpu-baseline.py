@@ -1,8 +1,6 @@
 import argparse
 from pathlib import Path
 
-import xarray as xr
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -13,6 +11,8 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
+    import xarray as xr
+
     ds = xr.open_zarr(Path(args.input_zarr))
 
     p = (ds.a.astype("float32") + ds.b.astype("float32") * ds.ps.squeeze()) / 100
