@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import asyncio
 import logging
+import tempfile
 from pathlib import Path
 from time import perf_counter
 from typing import Union
@@ -33,12 +35,14 @@ async def write_blosc_array(
             blocksize=compressor_config["blocksize"],
         )
         compressed = codec.encode(contiguous)
+
         path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-        path.write_bytes(compressed)
+
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as tmp:
+            tmp.write(compressed)
+            tmp_name = tmp.name
+
+        os.replace(tmp_name, path)
 
     await asyncio.to_thread(_write)
     elapsed = perf_counter() - started
