@@ -205,9 +205,10 @@ for i in range(3):
     for j in range(6):
         for k in range(5):
             cur = count % NUM_BUFFERS
+
             io_thread = threads[cur]
-                if io_thread is not None:
-                    io_thread.join()
+            if io_thread is not None:
+                io_thread.join()
                     
             with streams[cur]:
                 compute(i, j, k, buffers[cur])
