@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import argparse
 import blosc
 from pathlib import Path
 from typing import Union
@@ -19,6 +20,12 @@ ARRAY_ATTRS = {
     "coordinates": "a b latitude longitude",
     "_ARRAY_DIMENSIONS": ["time", "hybrid", "y", "x"],
 }
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-zarr", default="../data/dataset.zarr")
+    parser.add_argument("--output-zarr", default="out.zarr")
+    return parser.parse_args()
 
 def write_blosc_array(
     path: Union[str, Path],
@@ -149,9 +156,9 @@ def read_blosc_array(
     return dst
 
 def compute(i, j, k, buf):
-    t = cp.asarray(read_blosc_array(f"../data/dataset.zarr/t/{i}.0.{j}.{k}", dst=t_in_buf, dtype=np.float32, shape=(24, 65, 200, 200)), blocking=False)
-    q = cp.asarray(read_blosc_array(f"../data/dataset.zarr/q/{i}.0.{j}.{k}", dst=q_in_buf, dtype=np.float32, shape=(24, 65, 200, 200)), blocking=False)
-    ps = cp.asarray(read_blosc_array(f"../data/dataset.zarr/ps/{i}.0.{j}.{k}", dst=ps_in_buf, dtype=np.float32, shape=(24, 1, 200, 200)), blocking=False)
+    t = cp.asarray(read_blosc_array(input_zarr / "t" / f"{i}.0.{j}.{k}", dst=t_in_buf, dtype=np.float32, shape=(24, 65, 200, 200)), blocking=False)
+    q = cp.asarray(read_blosc_array(input_zarr / "q" / f"{i}.0.{j}.{k}", dst=q_in_buf, dtype=np.float32, shape=(24, 65, 200, 200)), blocking=False)
+    ps = cp.asarray(read_blosc_array(input_zarr / "ps" / f"{i}.0.{j}.{k}", dst=ps_in_buf, dtype=np.float32, shape=(24, 1, 200, 200)), blocking=False)
     ps = cp.squeeze(ps, axis=1)
 
     p = (a[None, :, None, None] + b[None, :, None, None] * ps[:, None, :, :]) / 100
@@ -170,6 +177,9 @@ def compute(i, j, k, buf):
 ##############
 #   START   #
 #############
+args = parse_args()
+input_zarr = Path(args.input_zarr)
+output_zarr = Path(args.output_zarr)
 
 compressor = {
             "id": "blosc",
@@ -194,8 +204,8 @@ ps_in_buf = cupyx.empty_pinned((24, 1, 200, 200), dtype=np.float32)
 streams = [cp.cuda.Stream(non_blocking=True) for _ in range(NUM_BUFFERS)]
 threads: list[threading.Thread | None] = [None for _ in range(NUM_BUFFERS)]
 
-a = cp.asarray(read_blosc_array(f"../data/dataset.zarr/a/0", dst=a_in_buf, dtype=np.float64, shape=(65,)).astype(np.float32))
-b = cp.asarray(read_blosc_array(f"../data/dataset.zarr/b/0", dst=b_in_buf, dtype=np.float64, shape=(65,)).astype(np.float32))
+a = cp.asarray(read_blosc_array(input_zarr / "a" / "0", dst=a_in_buf, dtype=np.float64, shape=(65,)).astype(np.float32))
+b = cp.asarray(read_blosc_array(input_zarr / "b" / "0", dst=b_in_buf, dtype=np.float64, shape=(65,)).astype(np.float32))
 
 
 count = 0
@@ -218,7 +228,7 @@ for i in range(3):
                 pi, pj, pk = prev_ijk
                 threads[prev] = threading.Thread(
                     target=write_blosc_array,
-                    args=(f"out.zarr/tier_a/{pi}.0.{pj}.{pk}", buffers[prev], compressor),
+                    args=(output_zarr / "tier_a" / f"{pi}.0.{pj}.{pk}", buffers[prev], compressor),
                 )
                 threads[prev].start()
 
@@ -232,14 +242,14 @@ if prev_ijk is not None:
     if io_thread is not None:
         io_thread.join()
     pi, pj, pk = prev_ijk
-    write_blosc_array(f"out.zarr/tier_a/{pi}.0.{pj}.{pk}", buffers[prev], compressor)
+    write_blosc_array(output_zarr / "tier_a" / f"{pi}.0.{pj}.{pk}", buffers[prev], compressor)
 
 for io_thread in threads:
     if io_thread is not None:
         io_thread.join()
 
 write_zarr_metadata(
-    "out.zarr/tier_a",
+    output_zarr / "tier_a",
     shape=ARRAY_SHAPE,
     chunks=CHUNK_SHAPE,
     compressor_config=compressor,
