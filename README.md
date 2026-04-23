@@ -36,12 +36,6 @@ pip install -r requirements.txt
 
 ## Usage
 
-From the repository root:
-
-```bash
-python main.py --input-zarr ../data/dataset.zarr --output-zarr out.zarr
-```
-
 ### Retrieve test data from S3 and run GPU calculations
 
 Use the helper script to download a local zarr test dataset:
@@ -67,10 +61,8 @@ including file paths and chunk ids, plus total runtime, for example:
 
 ## Tier scripts (GPU implementation levels)
 
-- `tier-a.py`: Basic GPU version with simple chunk-by-chunk processing and
-  multi-buffer stream/thread orchestration.
-- `tier-b.py`: Triple-buffered variant that overlaps GPU compute and output
-  writes more explicitly than tier-a.
+- `tier-a.py`: Optimized I/O implementation of tier-b that directly loads data from file into pinned memory buffers.
+- `tier-b.py`: Triple-buffered variant that overlaps GPU compute and I/O more efficiently that tier-c.
 - `tier-c.py`: Minimal ping-pong buffering example focused on a compact
   compute+write overlap pattern.
 - `tier-d.py`: High-level Dask/Xarray implementation that maps GPU block
