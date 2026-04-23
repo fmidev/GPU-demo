@@ -42,6 +42,20 @@ From the repository root:
 python main.py --input-zarr ../data/dataset.zarr --output-zarr out.zarr
 ```
 
+### Retrieve test data from S3 and run GPU calculations
+
+Use the helper script to download a local zarr test dataset:
+
+```bash
+python get_testdata.py input/input.zarr
+```
+
+Then run the GPU pipeline with that input:
+
+```bash
+python main.py --input-zarr input/input.zarr --output-zarr out.zarr
+```
+
 Expected output includes INFO logs with timings for Blosc I/O and GPU tasks,
 including file paths and chunk ids, plus total runtime, for example:
 
