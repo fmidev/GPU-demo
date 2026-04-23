@@ -65,6 +65,17 @@ including file paths and chunk ids, plus total runtime, for example:
 2026-01-01 12:00:12,340 INFO __main__ task=run_total elapsed_s=12.340000
 ```
 
+## Tier scripts (GPU implementation levels)
+
+- `tier-a.py`: Basic GPU version with simple chunk-by-chunk processing and
+  multi-buffer stream/thread orchestration.
+- `tier-b.py`: Triple-buffered variant that overlaps GPU compute and output
+  writes more explicitly than tier-a.
+- `tier-c.py`: Minimal ping-pong buffering example focused on a compact
+  compute+write overlap pattern.
+- `tier-d.py`: High-level Dask/Xarray implementation that maps GPU block
+  computation across chunks and writes results to Zarr.
+
 ## Data paths
 
 `main.py`, `tier-a.py`, `tier-b.py`, `tier-c.py`, and `tier-d.py` all accept:
