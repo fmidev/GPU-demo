@@ -36,10 +36,18 @@ pip install -r requirements.txt
 
 ## Usage
 
-From the repository root:
+### Retrieve test data from S3 and run GPU calculations
+
+Use the helper script to download a local zarr test dataset:
 
 ```bash
-python main.py --input-zarr ../data/dataset.zarr --output-zarr out.zarr
+python get_testdata.py input/input.zarr
+```
+
+Then run the GPU pipeline with that input:
+
+```bash
+python main.py --input-zarr input/input.zarr --output-zarr out.zarr
 ```
 
 Expected output includes INFO logs with timings for Blosc I/O and GPU tasks,
@@ -50,6 +58,15 @@ including file paths and chunk ids, plus total runtime, for example:
 2026-01-01 12:00:00,001 INFO __main__ task=chunk:0.0.0.0 kernel=rh elapsed_ms=...
 2026-01-01 12:00:12,340 INFO __main__ task=run_total elapsed_s=12.340000
 ```
+
+## Tier scripts (GPU implementation levels)
+
+- `tier-a.py`: Optimized I/O implementation of tier-b that directly loads data from file into pinned memory buffers.
+- `tier-b.py`: Triple-buffered variant that overlaps GPU compute and I/O more efficiently that tier-c.
+- `tier-c.py`: Minimal ping-pong buffering example focused on a compact
+  compute+write overlap pattern.
+- `tier-d.py`: High-level Dask/Xarray implementation that maps GPU block
+  computation across chunks and writes results to Zarr.
 
 ## Data paths
 

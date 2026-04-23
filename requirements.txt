@@ -2,3 +2,6 @@ numpy
 cupy-cuda12x
 numcodecs
 blosc
+xarray
+zarr
+s3fs
