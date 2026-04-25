@@ -91,8 +91,15 @@ z = da.map_blocks(
 A simpler ping-pong pattern with two pinned output buffers.  A generator
 alternates between `ping` and `pong` each iteration; the previous buffer is
 handed to a background write thread while the next chunk is computed.
+The device-to-host copy inside `compute` is **blocking**, so the GPU result is
+fully ready before the write thread is started.
 
 ```python
+def compute(i, j, k, buf):
+    t  = cp.asarray(read_blosc_array(...))
+    # ... GPU computation ...
+    RH.get(out=buf, blocking=True)   # blocking: waits for GPU → host copy to finish
+
 def pingpong() -> Iterator[np.ndarray]:
     ping = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
     pong = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
@@ -113,9 +120,16 @@ io_thread.start()
 
 Uses three pinned output buffers and three CUDA streams.  Each iteration
 submits GPU work on the current stream while a background thread concurrently
-writes the previous stream's result to disk.
+writes the previous stream's result to disk.  The device-to-host copy inside
+`compute` is **non-blocking**; `streams[previous].synchronize()` in the main
+loop ensures the copy has completed before the write thread is launched.
 
 ```python
+def compute(i, j, k, buf):
+    t  = cp.asarray(read_blosc_array(...))
+    # ... GPU computation ...
+    RH.get(out=buf, blocking=False)  # non-blocking: copy runs concurrently with next iteration
+
 buffers = [
     cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32),
     cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32),
@@ -130,7 +144,7 @@ streams = [
 # Inside the chunk loop:
 with streams[current]:
     compute(i, j, k, buffers[current])      # GPU work on current stream
-streams[previous].synchronize()
+streams[previous].synchronize()             # wait for non-blocking copy to finish
 threads[previous] = threading.Thread(       # write previous result in background
     target=write_blosc_array,
     args=(..., buffers[previous], ...),
