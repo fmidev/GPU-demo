@@ -66,27 +66,102 @@ optimized (tier A) to the least optimized (tier D):
 
 | Tier | Optimization level | Key technique |
 |------|--------------------|---------------|
-| `tier-a.py` | **Highest** | Reads data directly into pinned (page-locked) host buffers, maximizing PCIe transfer throughput |
-| `tier-b.py` | High | Triple-buffered pipeline that overlaps GPU compute and I/O across three in-flight chunks |
-| `tier-c.py` | Moderate | Ping-pong (double) buffering that overlaps the write of one chunk with the compute of the next |
-| `tier-d.py` | **Lowest** | High-level Dask/Xarray abstraction; GPU is used only inside `map_blocks`, with no explicit memory management or stream control |
+| `tier-a.py` | **Highest** | Decompresses directly into pinned input buffers; non-blocking `cp.asarray` |
+| `tier-b.py` | High | Triple-buffered pipeline with multiple CUDA streams; overlaps compute and I/O |
+| `tier-c.py` | Moderate | Ping-pong (double) buffering; overlaps write of one chunk with compute of next |
+| `tier-d.py` | **Lowest** | High-level `dask.array.map_blocks`; no pinned memory or explicit stream control |
 
-- `tier-a.py` *(most GPU-optimized)*: Extends tier B by decompressing Blosc
-  chunks directly into pinned (page-locked) memory buffers allocated with
-  `cupyx.empty_pinned`.  Pinned memory enables faster host-to-device transfers
-  and allows non-blocking `cp.asarray` calls, so the CPU and GPU can overlap
-  work with minimal synchronisation overhead.
-- `tier-b.py`: Uses three pinned output buffers and three CUDA streams to keep
-  the GPU busy: while one stream computes, the previous stream's result is
-  written to disk by a background thread.
-- `tier-c.py`: Simpler ping-pong approach with two pinned output buffers.
-  Compute and write alternate between the two buffers, providing a basic
-  compute–write overlap without the extra complexity of triple buffering.
-- `tier-d.py` *(least GPU-optimized)*: Delegates all scheduling and memory
-  management to Dask and Xarray.  `dask.array.map_blocks` calls a Python
-  function that moves each chunk to the GPU with `cp.asarray` and back with
-  `cp.asnumpy`, with no pinned memory, explicit CUDA streams, or manual
-  buffer reuse.
+### tier-a.py — Highest optimization
+
+Extends tier B by decompressing Blosc chunks directly into pinned (page-locked)
+input buffers via `read_blosc_array`'s `dst=` parameter, and passing those
+buffers to `cp.asarray` with `blocking=False`.  This eliminates a copy into
+ordinary heap memory and lets the CPU decompress the next chunk while the GPU
+processes the current one.
+
+```python
+# Pinned input buffers allocated once
+t_in_buf  = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
+q_in_buf  = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
+ps_in_buf = cupyx.empty_pinned((24,  1, 200, 200), dtype=np.float32)
+
+# Blosc decompresses directly into the pinned buffer; transfer starts immediately
+t  = cp.asarray(read_blosc_array(..., dst=t_in_buf,  ...), blocking=False)
+q  = cp.asarray(read_blosc_array(..., dst=q_in_buf,  ...), blocking=False)
+ps = cp.asarray(read_blosc_array(..., dst=ps_in_buf, ...), blocking=False)
+```
+
+### tier-b.py — High optimization
+
+Uses three pinned output buffers and three CUDA streams.  Each iteration
+submits GPU work on the current stream while a background thread concurrently
+writes the previous stream's result to disk.
+
+```python
+buffers = [
+    cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32),
+    cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32),
+    cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32),
+]
+streams = [
+    cp.cuda.Stream(non_blocking=True),
+    cp.cuda.Stream(non_blocking=True),
+    cp.cuda.Stream(non_blocking=True),
+]
+
+# Inside the chunk loop:
+with streams[current]:
+    compute(i, j, k, buffers[current])   # GPU work on current stream
+streams[previous].synchronize()
+threads[previous] = threading.Thread(    # write previous result in background
+    target=write_blosc_array, args=(..., buffers[previous], ...))
+threads[previous].start()
+```
+
+### tier-c.py — Moderate optimization
+
+A simpler ping-pong pattern with two pinned output buffers.  A generator
+alternates between `ping` and `pong` each iteration; the previous buffer is
+handed to a background write thread while the next chunk is computed.
+
+```python
+def pingpong() -> Iterator[np.ndarray]:
+    ping = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
+    pong = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
+    while True:
+        yield ping
+        yield pong
+
+# Inside the chunk loop:
+buffer = next(buffers)          # alternate between ping and pong
+compute(i, j, k, buffer)        # GPU → pinned buffer (blocking)
+if io_thread is not None:
+    io_thread.join()
+io_thread = threading.Thread(target=write_blosc_array, args=(..., buffer, ...))
+io_thread.start()
+```
+
+### tier-d.py — Lowest optimization
+
+Delegates all scheduling and memory management to Dask and Xarray.
+`dask.array.map_blocks` calls a plain Python function that moves each chunk to
+the GPU with `cp.asarray` and back with `cp.asnumpy`.  There is no pinned
+memory, no explicit CUDA stream, and no buffer reuse between chunks.
+
+```python
+def relative_humidity_gpu(t_block, q_block, ps_block, a_coeff, b_coeff):
+    t_gpu  = cp.asarray(t_block)    # pageable host → device copy
+    q_gpu  = cp.asarray(q_block)
+    ps_gpu = cp.asarray(ps_block)
+    # ... compute ...
+    return cp.asnumpy(rh_gpu)       # device → pageable host copy
+
+z = da.map_blocks(
+    relative_humidity_gpu,
+    t, q, ps, a, b,
+    dtype=np.float32,
+)
+```
 
 ## Kernel equations
 
