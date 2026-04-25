@@ -61,8 +61,12 @@ including file paths and chunk ids, plus total runtime, for example:
 
 ## Tier scripts (GPU implementation levels)
 
-The tier scripts represent a spectrum of GPU optimization, from the least
-optimized (tier D) to the most optimized (tier A):
+The tier scripts (`tier-d.py` through `tier-a.py`) are **standalone example
+programs**, independent of `main.py`.  Each one computes the same relative
+humidity field but applies progressively more GPU optimization techniques.
+They form a learning progression — from the least optimized (tier D) to the
+most optimized (tier A) — and the techniques demonstrated in the higher tiers
+are the same ones that `main.py` builds upon in its full async pipeline.
 
 ### tier-d.py — Lowest optimization
 
