@@ -96,9 +96,11 @@ fully ready before the write thread is started.
 
 ```python
 def compute(i, j, k, buf):
-    t  = cp.asarray(read_blosc_array(...))
+    t  = cp.asarray(read_blosc_array(...))   # pageable read → device
+    q  = cp.asarray(read_blosc_array(...))
+    ps = cp.asarray(read_blosc_array(...))
     # ... GPU computation ...
-    RH.get(out=buf, blocking=True)   # blocking: waits for GPU → host copy to finish
+    RH.get(out=buf, blocking=True)           # blocking: waits for GPU → host copy to finish
 
 def pingpong() -> Iterator[np.ndarray]:
     ping = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
@@ -107,13 +109,15 @@ def pingpong() -> Iterator[np.ndarray]:
         yield ping
         yield pong
 
-# Inside the chunk loop:
-buffer = next(buffers)          # alternate between ping and pong
-compute(i, j, k, buffer)        # GPU → pinned buffer (blocking)
-if io_thread is not None:
-    io_thread.join()
-io_thread = threading.Thread(target=write_blosc_array, args=(..., buffer, ...))
-io_thread.start()
+for i in range(3):
+    for j in range(6):
+        for k in range(5):
+            buffer = next(buffers)               # alternate between ping and pong
+            compute(i, j, k, buffer)             # GPU → pinned buffer (blocking)
+            if io_thread is not None:
+                io_thread.join()
+            io_thread = threading.Thread(target=write_blosc_array, args=(..., buffer, ...))
+            io_thread.start()
 ```
 
 ### tier-b.py — High optimization
@@ -126,9 +130,11 @@ loop ensures the copy has completed before the write thread is launched.
 
 ```python
 def compute(i, j, k, buf):
-    t  = cp.asarray(read_blosc_array(...))
+    t  = cp.asarray(read_blosc_array(...))   # pageable read → device
+    q  = cp.asarray(read_blosc_array(...))
+    ps = cp.asarray(read_blosc_array(...))
     # ... GPU computation ...
-    RH.get(out=buf, blocking=False)  # non-blocking: copy runs concurrently with next iteration
+    RH.get(out=buf, blocking=False)          # non-blocking: copy runs concurrently with next iteration
 
 buffers = [
     cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32),
@@ -141,15 +147,18 @@ streams = [
     cp.cuda.Stream(non_blocking=True),
 ]
 
-# Inside the chunk loop:
-with streams[current]:
-    compute(i, j, k, buffers[current])      # GPU work on current stream
-streams[previous].synchronize()             # wait for non-blocking copy to finish
-threads[previous] = threading.Thread(       # write previous result in background
-    target=write_blosc_array,
-    args=(..., buffers[previous], ...),
-)
-threads[previous].start()
+for i in range(3):
+    for j in range(6):
+        for k in range(5):
+            with streams[current]:
+                compute(i, j, k, buffers[current])       # GPU work on current stream
+            streams[previous].synchronize()              # wait for non-blocking copy to finish
+            threads[previous] = threading.Thread(        # write previous result in background
+                target=write_blosc_array,
+                args=(..., buffers[previous], ...),
+            )
+            threads[previous].start()
+            current, previous = (current + 1) % 3, current
 ```
 
 ### tier-a.py — Highest optimization
@@ -172,10 +181,25 @@ t_in_buf  = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
 q_in_buf  = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
 ps_in_buf = cupyx.empty_pinned((24,  1, 200, 200), dtype=np.float32)
 
-# Blosc decompresses directly into the pinned buffer; GPU transfer starts immediately
-t  = cp.asarray(read_blosc_array(..., dst=t_in_buf,  ...), blocking=False)
-q  = cp.asarray(read_blosc_array(..., dst=q_in_buf,  ...), blocking=False)
-ps = cp.asarray(read_blosc_array(..., dst=ps_in_buf, ...), blocking=False)
+def compute(i, j, k, buf):
+    t  = cp.asarray(read_blosc_array(..., dst=t_in_buf,  ...), blocking=False)  # zero-copy → GPU
+    q  = cp.asarray(read_blosc_array(..., dst=q_in_buf,  ...), blocking=False)
+    ps = cp.asarray(read_blosc_array(..., dst=ps_in_buf, ...), blocking=False)
+    # ... GPU computation ...
+    RH.get(out=buf, blocking=False)
+
+for i in range(3):
+    for j in range(6):
+        for k in range(5):
+            with streams[current]:
+                compute(i, j, k, buffers[current])
+            streams[previous].synchronize()
+            threads[previous] = threading.Thread(
+                target=write_blosc_array,
+                args=(..., buffers[previous], ...),
+            )
+            threads[previous].start()
+            current, previous = (current + 1) % NUM_BUFFERS, current
 ```
 
 ## Kernel equations
