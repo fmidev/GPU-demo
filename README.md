@@ -61,12 +61,32 @@ including file paths and chunk ids, plus total runtime, for example:
 
 ## Tier scripts (GPU implementation levels)
 
-- `tier-a.py`: Optimized I/O implementation of tier-b that directly loads data from file into pinned memory buffers.
-- `tier-b.py`: Triple-buffered variant that overlaps GPU compute and I/O more efficiently that tier-c.
-- `tier-c.py`: Minimal ping-pong buffering example focused on a compact
-  compute+write overlap pattern.
-- `tier-d.py`: High-level Dask/Xarray implementation that maps GPU block
-  computation across chunks and writes results to Zarr.
+The tier scripts represent a spectrum of GPU optimization, from the most
+optimized (tier A) to the least optimized (tier D):
+
+| Tier | Optimization level | Key technique |
+|------|--------------------|---------------|
+| `tier-a.py` | **Highest** | Reads data directly into pinned (page-locked) host buffers, maximizing PCIe transfer throughput |
+| `tier-b.py` | High | Triple-buffered pipeline that overlaps GPU compute and I/O across three in-flight chunks |
+| `tier-c.py` | Moderate | Ping-pong (double) buffering that overlaps the write of one chunk with the compute of the next |
+| `tier-d.py` | **Lowest** | High-level Dask/Xarray abstraction; GPU is used only inside `map_blocks`, with no explicit memory management or stream control |
+
+- `tier-a.py` *(most GPU-optimized)*: Extends tier B by decompressing Blosc
+  chunks directly into pinned (page-locked) memory buffers allocated with
+  `cupyx.empty_pinned`.  Pinned memory enables faster host-to-device transfers
+  and allows non-blocking `cp.asarray` calls, so the CPU and GPU can overlap
+  work with minimal synchronisation overhead.
+- `tier-b.py`: Uses three pinned output buffers and three CUDA streams to keep
+  the GPU busy: while one stream computes, the previous stream's result is
+  written to disk by a background thread.
+- `tier-c.py`: Simpler ping-pong approach with two pinned output buffers.
+  Compute and write alternate between the two buffers, providing a basic
+  compute–write overlap without the extra complexity of triple buffering.
+- `tier-d.py` *(least GPU-optimized)*: Delegates all scheduling and memory
+  management to Dask and Xarray.  `dask.array.map_blocks` calls a Python
+  function that moves each chunk to the GPU with `cp.asarray` and back with
+  `cp.asnumpy`, with no pinned memory, explicit CUDA streams, or manual
+  buffer reuse.
 
 ## Kernel equations
 
