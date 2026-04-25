@@ -61,12 +61,150 @@ including file paths and chunk ids, plus total runtime, for example:
 
 ## Tier scripts (GPU implementation levels)
 
-- `tier-a.py`: Optimized I/O implementation of tier-b that directly loads data from file into pinned memory buffers.
-- `tier-b.py`: Triple-buffered variant that overlaps GPU compute and I/O more efficiently that tier-c.
-- `tier-c.py`: Minimal ping-pong buffering example focused on a compact
-  compute+write overlap pattern.
-- `tier-d.py`: High-level Dask/Xarray implementation that maps GPU block
-  computation across chunks and writes results to Zarr.
+The tier scripts (`tier-d.py` through `tier-a.py`) are **standalone example
+programs**, independent of `main.py`.  Each one computes the same relative
+humidity field but applies progressively more GPU optimization techniques.
+They form a learning progression — from the least optimized (tier D) to the
+most optimized (tier A) — and the techniques demonstrated in the higher tiers
+are the same ones that `main.py` builds upon in its full async pipeline.
+
+### tier-d.py — Lowest optimization
+
+Delegates all scheduling and memory management to Dask and Xarray.
+`dask.array.map_blocks` calls a plain Python function that moves each chunk to
+the GPU with `cp.asarray` and back with `cp.asnumpy`.  There is no pinned
+memory, no explicit CUDA stream, and no buffer reuse between chunks.
+
+```python
+def relative_humidity_gpu(t_block, q_block, ps_block, a_coeff, b_coeff):
+    t_gpu = cp.asarray(t_block)    # pageable host → device copy
+    q_gpu = cp.asarray(q_block)
+    ps_gpu = cp.asarray(ps_block)
+    # ... compute ...
+    return cp.asnumpy(rh_gpu)      # device → pageable host copy
+
+z = da.map_blocks(
+    relative_humidity_gpu,
+    t, q, ps, a, b,
+    dtype=np.float32,
+)
+```
+
+### tier-c.py — Moderate optimization
+
+A simpler ping-pong pattern with two pinned output buffers.  A generator
+alternates between `ping` and `pong` each iteration; the previous buffer is
+handed to a background write thread while the next chunk is computed.
+The device-to-host copy inside `compute` is **blocking**, so the GPU result is
+fully ready before the write thread is started.
+
+```python
+def compute(i, j, k, buf):
+    t  = cp.asarray(read_blosc_array(...))   # pageable read → device
+    q  = cp.asarray(read_blosc_array(...))
+    ps = cp.asarray(read_blosc_array(...))
+    # ... GPU computation ...
+    RH.get(out=buf, blocking=True)           # blocking: waits for GPU → host copy to finish
+
+def pingpong() -> Iterator[np.ndarray]:
+    ping = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
+    pong = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
+    while True:
+        yield ping
+        yield pong
+
+for i in range(3):
+    for j in range(6):
+        for k in range(5):
+            buffer = next(buffers)               # alternate between ping and pong
+            compute(i, j, k, buffer)             # GPU → pinned buffer (blocking)
+            if io_thread is not None:
+                io_thread.join()
+            io_thread = threading.Thread(target=write_blosc_array, args=(..., buffer, ...))
+            io_thread.start()
+```
+
+### tier-b.py — High optimization
+
+Uses three pinned output buffers and three CUDA streams.  Each iteration
+submits GPU work on the current stream while a background thread concurrently
+writes the previous stream's result to disk.  The device-to-host copy inside
+`compute` is **non-blocking**; `streams[previous].synchronize()` in the main
+loop ensures the copy has completed before the write thread is launched.
+
+```python
+def compute(i, j, k, buf):
+    t  = cp.asarray(read_blosc_array(...))   # pageable read → device
+    q  = cp.asarray(read_blosc_array(...))
+    ps = cp.asarray(read_blosc_array(...))
+    # ... GPU computation ...
+    RH.get(out=buf, blocking=False)          # non-blocking: copy runs concurrently with next iteration
+
+buffers = [
+    cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32),
+    cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32),
+    cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32),
+]
+streams = [
+    cp.cuda.Stream(non_blocking=True),
+    cp.cuda.Stream(non_blocking=True),
+    cp.cuda.Stream(non_blocking=True),
+]
+
+for i in range(3):
+    for j in range(6):
+        for k in range(5):
+            with streams[current]:
+                compute(i, j, k, buffers[current])       # GPU work on current stream
+            streams[previous].synchronize()              # wait for non-blocking copy to finish
+            threads[previous] = threading.Thread(        # write previous result in background
+                target=write_blosc_array,
+                args=(..., buffers[previous], ...),
+            )
+            threads[previous].start()
+            current, previous = (current + 1) % 3, current
+```
+
+### tier-a.py — Highest optimization
+
+Extends tier B by decompressing Blosc chunks directly into pinned (page-locked)
+input buffers.  `read_blosc_array` accepts a `dst` array and calls
+`blosc.decompress_ptr` with `dst.ctypes.data`, writing bytes straight into the
+pinned buffer without an intermediate allocation.  Passing the result to
+`cp.asarray` with `blocking=False` lets the CPU decompress the next chunk while
+the GPU transfers and processes the current one.
+
+```python
+def read_blosc_array(file_path, dst, *, dtype, shape, ...) -> np.ndarray:
+    compressed = file_path.read_bytes()
+    blosc.decompress_ptr(compressed, dst.ctypes.data)  # decompress into pinned buffer
+    return dst
+
+# Pinned input buffers allocated once
+t_in_buf  = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
+q_in_buf  = cupyx.empty_pinned((24, 65, 200, 200), dtype=np.float32)
+ps_in_buf = cupyx.empty_pinned((24,  1, 200, 200), dtype=np.float32)
+
+def compute(i, j, k, buf):
+    t  = cp.asarray(read_blosc_array(..., dst=t_in_buf,  ...), blocking=False)  # zero-copy → GPU
+    q  = cp.asarray(read_blosc_array(..., dst=q_in_buf,  ...), blocking=False)
+    ps = cp.asarray(read_blosc_array(..., dst=ps_in_buf, ...), blocking=False)
+    # ... GPU computation ...
+    RH.get(out=buf, blocking=False)
+
+for i in range(3):
+    for j in range(6):
+        for k in range(5):
+            with streams[current]:
+                compute(i, j, k, buffers[current])
+            streams[previous].synchronize()
+            threads[previous] = threading.Thread(
+                target=write_blosc_array,
+                args=(..., buffers[previous], ...),
+            )
+            threads[previous].start()
+            current, previous = (current + 1) % NUM_BUFFERS, current
+```
 
 ## Kernel equations
 
